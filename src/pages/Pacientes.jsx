@@ -27,6 +27,25 @@ export default function Pacientes({
   const [buscaCadastro, setBuscaCadastro] = useState("");
   const [salvandoPaciente, setSalvandoPaciente] = useState(false);
   const [salvandoConsulta, setSalvandoConsulta] = useState(false);
+  const [salvandoPagamento, setSalvandoPagamento] = useState(false);
+
+  const [pagamento, setPagamento] = useState({
+    pacienteId: "",
+    paciente: "",
+    cpf: "",
+    telefone: "",
+    atendimentoId: "",
+    tipoAtendimento: "",
+    valor: "",
+    formaPagamento: "Dinheiro",
+    statusPagamento: "Pago",
+    dataPagamento: new Date().toISOString().split("T")[0],
+    observacoes: "",
+  });
+
+  const [paginaLista, setPaginaLista] = useState(1);
+  const [paginaBusca, setPaginaBusca] = useState(1);
+  const itensPorPagina = 8;
 
   const [form, setForm] = useState({
     nome: "",
@@ -120,6 +139,132 @@ export default function Pacientes({
       observacoesRecepcao: "",
       tipoAtendimento: "Agendamento",
     });
+  }
+
+  function limparPagamento() {
+    setPagamento({
+      pacienteId: "",
+      paciente: "",
+      cpf: "",
+      telefone: "",
+      atendimentoId: "",
+      tipoAtendimento: "",
+      valor: "",
+      formaPagamento: "Dinheiro",
+      statusPagamento: "Pago",
+      dataPagamento: new Date().toISOString().split("T")[0],
+      observacoes: "",
+    });
+  }
+
+  function handlePagamentoChange(e) {
+    const { name, value } = e.target;
+    setPagamento((prev) => ({
+      ...prev,
+      [name]: value,
+    }));
+  }
+
+  function selecionarPacientePagamento(pacienteId) {
+    const pacienteSelecionado = pacientes.find((item) => item.id === pacienteId);
+
+    setPagamento((prev) => ({
+      ...prev,
+      pacienteId: pacienteSelecionado?.id || "",
+      paciente: pacienteSelecionado?.nome || "",
+      cpf: pacienteSelecionado?.cpf || "",
+      telefone: pacienteSelecionado?.telefone || "",
+    }));
+  }
+
+  function selecionarAtendimentoPagamento(atendimentoId) {
+    const atendimentoSelecionado = consultas.find((item) => item.id === atendimentoId);
+
+    if (!atendimentoSelecionado) {
+      setPagamento((prev) => ({
+        ...prev,
+        atendimentoId: "",
+      }));
+      return;
+    }
+
+    const pacienteVinculado = pacientes.find(
+      (item) =>
+        item.cpf &&
+        atendimentoSelecionado.cpf &&
+        item.cpf === atendimentoSelecionado.cpf
+    );
+
+    setPagamento((prev) => ({
+      ...prev,
+      atendimentoId: atendimentoSelecionado.id || "",
+      pacienteId: pacienteVinculado?.id || prev.pacienteId || "",
+      paciente:
+        atendimentoSelecionado.paciente ||
+        atendimentoSelecionado.nomePaciente ||
+        prev.paciente ||
+        "",
+      cpf: atendimentoSelecionado.cpf || prev.cpf || "",
+      telefone: atendimentoSelecionado.telefone || prev.telefone || "",
+      tipoAtendimento:
+        atendimentoSelecionado.tipoAtendimento ||
+        atendimentoSelecionado.especialidade ||
+        prev.tipoAtendimento ||
+        "",
+    }));
+  }
+
+  async function salvarPagamento() {
+    if (
+      !pagamento.paciente ||
+      !pagamento.tipoAtendimento ||
+      !pagamento.valor ||
+      !pagamento.formaPagamento ||
+      !pagamento.statusPagamento ||
+      !pagamento.dataPagamento
+    ) {
+      alert("Preencha paciente, serviço, valor, forma, status e data do pagamento.");
+      return;
+    }
+
+    const valorNumerico = Number(String(pagamento.valor).replace(",", "."));
+
+    if (Number.isNaN(valorNumerico) || valorNumerico < 0) {
+      alert("Informe um valor válido para o pagamento.");
+      return;
+    }
+
+    try {
+      setSalvandoPagamento(true);
+
+      await addDoc(collection(db, "pagamentos"), {
+        pacienteId: pagamento.pacienteId || "",
+        paciente: pagamento.paciente,
+        cpf: pagamento.cpf || "",
+        telefone: pagamento.telefone || "",
+        atendimentoId: pagamento.atendimentoId || "",
+        tipoAtendimento: pagamento.tipoAtendimento,
+        valor: valorNumerico,
+        formaPagamento: pagamento.formaPagamento,
+        statusPagamento: pagamento.statusPagamento,
+        dataPagamento: pagamento.dataPagamento,
+        observacoes: pagamento.observacoes || "",
+        origem: "Recepção",
+        tipoMovimentacao: "Receita",
+        criadoPor:
+          userData?.nome || userData?.name || firebaseUser?.email || "Recepção",
+        criadoPorEmail: firebaseUser?.email || "",
+        criadoEm: serverTimestamp(),
+      });
+
+      limparPagamento();
+      alert("Pagamento registrado com sucesso. Ele já ficará disponível no Financeiro.");
+    } catch (error) {
+      console.error("Erro ao salvar pagamento:", error);
+      alert("Não foi possível registrar o pagamento.");
+    } finally {
+      setSalvandoPagamento(false);
+    }
   }
 
   async function salvarPaciente() {
@@ -238,7 +383,8 @@ export default function Pacientes({
         pacienteNome: paciente.nome || "",
         pacienteCpf: paciente.cpf || "",
         motivo,
-        excluidoPor: userData?.nome || userData?.name || firebaseUser?.email || "Administrador",
+        excluidoPor:
+          userData?.nome || userData?.name || firebaseUser?.email || "Administrador",
         excluidoPorEmail: firebaseUser?.email || "",
         criadoEm: serverTimestamp(),
       });
@@ -289,6 +435,17 @@ export default function Pacientes({
     setAbaAtiva("agendamento");
   }
 
+  function carregarParaPagamento(item) {
+    setPagamento((prev) => ({
+      ...prev,
+      pacienteId: item.id || "",
+      paciente: item.nome || "",
+      cpf: item.cpf || "",
+      telefone: item.telefone || "",
+    }));
+    setAbaAtiva("pagamentos");
+  }
+
   const listaFiltrada = useMemo(() => {
     return pacientes.filter((item) =>
       (item.nome || "").toLowerCase().includes(busca.toLowerCase())
@@ -313,9 +470,30 @@ export default function Pacientes({
     );
   }, [consultas, agendamento.nomePaciente, agendamento.cpf]);
 
+  const atendimentosDoDia = useMemo(() => {
+    const hoje = new Date().toISOString().split("T")[0];
+    return consultas.filter((item) => item.data === hoje || item.chegouHoje);
+  }, [consultas]);
+
   const totalPacientes = pacientes.length;
   const pacientesAtivos = pacientes.filter((item) => item.status === "Ativo").length;
   const pacientesRetorno = pacientes.filter((item) => item.status === "Retorno").length;
+
+  const totalPaginasLista = Math.max(1, Math.ceil(listaFiltrada.length / itensPorPagina));
+  const totalPaginasBusca = Math.max(
+    1,
+    Math.ceil(buscaCadastroFiltrada.length / itensPorPagina)
+  );
+
+  const listaPaginada = listaFiltrada.slice(
+    (paginaLista - 1) * itensPorPagina,
+    paginaLista * itensPorPagina
+  );
+
+  const buscaPaginada = buscaCadastroFiltrada.slice(
+    (paginaBusca - 1) * itensPorPagina,
+    paginaBusca * itensPorPagina
+  );
 
   function badgeClass(status) {
     if (status === "Ativo") return "patients-badge patients-badge-blue";
@@ -323,8 +501,33 @@ export default function Pacientes({
     return "patients-badge";
   }
 
+  const painelInternoStyle = {
+    maxHeight: "calc(100vh - 250px)",
+    overflow: "hidden",
+  };
+
+  const conteudoAbaStyle = {
+    marginTop: "20px",
+    height: "calc(100vh - 360px)",
+    minHeight: "360px",
+    overflow: "hidden",
+  };
+
+  const scrollInternoStyle = {
+    height: "100%",
+    overflowY: "auto",
+    paddingRight: "4px",
+  };
+
+  const tabelaScrollStyle = {
+    maxHeight: "calc(100vh - 460px)",
+    minHeight: "280px",
+    overflowY: "auto",
+    borderRadius: "12px",
+  };
+
   return (
-    <div className="patients-page">
+    <div className="patients-page" style={{ height: "100%", overflow: "hidden" }}>
       <div className="page-header">
         <h1>Recepção</h1>
         <p className="page-subtitle">
@@ -376,13 +579,14 @@ export default function Pacientes({
         </div>
       </div>
 
-      <div className="page-card patients-card patients-main-card" style={{ marginTop: "20px" }}>
+      <div
+        className="page-card patients-card patients-main-card"
+        style={{ marginTop: "20px", ...painelInternoStyle }}
+      >
         <div className="patients-card-header">
           <div>
             <h3>Central de recepção</h3>
-            <p className="patients-card-subtitle">
-              Use as abas para organizar o fluxo
-            </p>
+            <p className="patients-card-subtitle">Use as abas para organizar o fluxo</p>
           </div>
 
           <div className="toolbar" style={{ marginBottom: 0 }}>
@@ -391,6 +595,9 @@ export default function Pacientes({
             </button>
             <button className="secondary-btn" onClick={limparAgendamento}>
               Limpar atendimento
+            </button>
+            <button className="secondary-btn" onClick={limparPagamento}>
+              Limpar pagamento
             </button>
           </div>
         </div>
@@ -405,14 +612,20 @@ export default function Pacientes({
 
           <button
             className={`patients-tab ${abaAtiva === "buscar" ? "active" : ""}`}
-            onClick={() => setAbaAtiva("buscar")}
+            onClick={() => {
+              setAbaAtiva("buscar");
+              setPaginaBusca(1);
+            }}
           >
             Buscar cadastro
           </button>
 
           <button
             className={`patients-tab ${abaAtiva === "lista" ? "active" : ""}`}
-            onClick={() => setAbaAtiva("lista")}
+            onClick={() => {
+              setAbaAtiva("lista");
+              setPaginaLista(1);
+            }}
           >
             Lista de pacientes
           </button>
@@ -423,12 +636,19 @@ export default function Pacientes({
           >
             Encaminhar atendimento
           </button>
+
+          <button
+            className={`patients-tab ${abaAtiva === "pagamentos" ? "active" : ""}`}
+            onClick={() => setAbaAtiva("pagamentos")}
+          >
+            Pagamentos
+          </button>
         </div>
 
-        <div style={{ marginTop: "20px" }}>
+        <div style={conteudoAbaStyle}>
           {abaAtiva === "cadastro" && (
-            <div className="patients-cadastro-layout">
-              <div className="patients-cadastro-main">
+            <div className="patients-cadastro-layout" style={{ height: "100%" }}>
+              <div className="patients-cadastro-main" style={scrollInternoStyle}>
                 <div className="patients-section-card">
                   <h4 className="patients-section-title">Dados pessoais</h4>
 
@@ -661,119 +881,184 @@ export default function Pacientes({
           )}
 
           {abaAtiva === "buscar" && (
-            <div>
+            <div style={scrollInternoStyle}>
               <div className="toolbar">
                 <input
                   className="input search-input"
                   value={buscaCadastro}
-                  onChange={(e) => setBuscaCadastro(e.target.value)}
+                  onChange={(e) => {
+                    setBuscaCadastro(e.target.value);
+                    setPaginaBusca(1);
+                  }}
                   placeholder="Buscar por nome ou CPF"
                 />
               </div>
 
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Nome</th>
-                    <th>CPF</th>
-                    <th>Telefone</th>
-                    <th>Convênio</th>
-                    <th>Ações</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {buscaCadastroFiltrada.map((item) => (
-                    <tr key={item.id}>
-                      <td>{item.nome}</td>
-                      <td>{item.cpf}</td>
-                      <td>{item.telefone}</td>
-                      <td>{item.convenio}</td>
-                      <td>
-                        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                          <button
-                            className="secondary-btn"
-                            onClick={() => carregarPaciente(item)}
-                          >
-                            Carregar cadastro
-                          </button>
-
-                          <button
-                            className="secondary-btn"
-                            onClick={() => carregarParaAtendimento(item)}
-                          >
-                            Encaminhar
-                          </button>
-
-                          {isAdmin && (
-                            <button
-                              className="danger-btn"
-                              onClick={() => excluirPaciente(item)}
-                            >
-                              Excluir
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-
-                  {buscaCadastroFiltrada.length === 0 && (
+              <div style={tabelaScrollStyle}>
+                <table className="table">
+                  <thead>
                     <tr>
-                      <td colSpan="5">Nenhum cadastro encontrado.</td>
+                      <th>Nome</th>
+                      <th>CPF</th>
+                      <th>Telefone</th>
+                      <th>Convênio</th>
+                      <th>Ações</th>
                     </tr>
-                  )}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {buscaPaginada.map((item) => (
+                      <tr key={item.id}>
+                        <td>{item.nome}</td>
+                        <td>{item.cpf}</td>
+                        <td>{item.telefone}</td>
+                        <td>{item.convenio}</td>
+                        <td>
+                          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                            <button
+                              className="secondary-btn"
+                              onClick={() => carregarPaciente(item)}
+                            >
+                              Carregar cadastro
+                            </button>
+
+                            <button
+                              className="secondary-btn"
+                              onClick={() => carregarParaAtendimento(item)}
+                            >
+                              Encaminhar
+                            </button>
+
+                            <button
+                              className="secondary-btn"
+                              onClick={() => carregarParaPagamento(item)}
+                            >
+                              Pagamento
+                            </button>
+
+                            {isAdmin && (
+                              <button
+                                className="danger-btn"
+                                onClick={() => excluirPaciente(item)}
+                              >
+                                Excluir
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+
+                    {buscaCadastroFiltrada.length === 0 && (
+                      <tr>
+                        <td colSpan="5">Nenhum cadastro encontrado.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: 12 }}>
+                <button
+                  className="secondary-btn"
+                  disabled={paginaBusca === 1}
+                  onClick={() => setPaginaBusca((prev) => Math.max(1, prev - 1))}
+                >
+                  Anterior
+                </button>
+
+                <span>
+                  Página {paginaBusca} de {totalPaginasBusca}
+                </span>
+
+                <button
+                  className="secondary-btn"
+                  disabled={paginaBusca >= totalPaginasBusca}
+                  onClick={() =>
+                    setPaginaBusca((prev) => Math.min(totalPaginasBusca, prev + 1))
+                  }
+                >
+                  Próxima
+                </button>
+              </div>
             </div>
           )}
 
           {abaAtiva === "lista" && (
-            <div>
+            <div style={scrollInternoStyle}>
               <div className="toolbar">
                 <input
                   className="input search-input"
                   value={busca}
-                  onChange={(e) => setBusca(e.target.value)}
+                  onChange={(e) => {
+                    setBusca(e.target.value);
+                    setPaginaLista(1);
+                  }}
                   placeholder="Buscar paciente por nome"
                 />
               </div>
 
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Nome</th>
-                    <th>CPF</th>
-                    <th>Telefone</th>
-                    <th>Convênio</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {listaFiltrada.map((item) => (
-                    <tr key={item.id}>
-                      <td>{item.nome}</td>
-                      <td>{item.cpf}</td>
-                      <td>{item.telefone}</td>
-                      <td>{item.convenio}</td>
-                      <td>
-                        <span className={badgeClass(item.status)}>{item.status}</span>
-                      </td>
-                    </tr>
-                  ))}
-
-                  {listaFiltrada.length === 0 && (
+              <div style={tabelaScrollStyle}>
+                <table className="table">
+                  <thead>
                     <tr>
-                      <td colSpan="5">Nenhum paciente encontrado.</td>
+                      <th>Nome</th>
+                      <th>CPF</th>
+                      <th>Telefone</th>
+                      <th>Convênio</th>
+                      <th>Status</th>
                     </tr>
-                  )}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {listaPaginada.map((item) => (
+                      <tr key={item.id}>
+                        <td>{item.nome}</td>
+                        <td>{item.cpf}</td>
+                        <td>{item.telefone}</td>
+                        <td>{item.convenio}</td>
+                        <td>
+                          <span className={badgeClass(item.status)}>{item.status}</span>
+                        </td>
+                      </tr>
+                    ))}
+
+                    {listaFiltrada.length === 0 && (
+                      <tr>
+                        <td colSpan="5">Nenhum paciente encontrado.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: 12 }}>
+                <button
+                  className="secondary-btn"
+                  disabled={paginaLista === 1}
+                  onClick={() => setPaginaLista((prev) => Math.max(1, prev - 1))}
+                >
+                  Anterior
+                </button>
+
+                <span>
+                  Página {paginaLista} de {totalPaginasLista}
+                </span>
+
+                <button
+                  className="secondary-btn"
+                  disabled={paginaLista >= totalPaginasLista}
+                  onClick={() =>
+                    setPaginaLista((prev) => Math.min(totalPaginasLista, prev + 1))
+                  }
+                >
+                  Próxima
+                </button>
+              </div>
             </div>
           )}
 
           {abaAtiva === "agendamento" && (
-            <div className="patients-cadastro-layout">
-              <div className="patients-cadastro-main">
+            <div className="patients-cadastro-layout" style={{ height: "100%" }}>
+              <div className="patients-cadastro-main" style={scrollInternoStyle}>
                 <div className="patients-section-card">
                   <h4 className="patients-section-title">Encaminhar atendimento</h4>
 
@@ -895,14 +1180,18 @@ export default function Pacientes({
                 </div>
               </div>
 
-              <div className="patients-cadastro-side">
+              <div className="patients-cadastro-side" style={{ overflowY: "auto" }}>
                 <div className="page-card patients-card patients-side-highlight">
                   <h4 className="patients-section-title">Histórico do paciente</h4>
 
                   {consultasDoPaciente.length > 0 ? (
                     <div className="patients-mini-list">
                       {consultasDoPaciente.map((item) => (
-                        <div key={item.id} className="muted-box" style={{ marginBottom: "12px" }}>
+                        <div
+                          key={item.id}
+                          className="muted-box"
+                          style={{ marginBottom: "12px" }}
+                        >
                           <strong>
                             {item.data} às {item.hora}
                           </strong>
@@ -918,6 +1207,207 @@ export default function Pacientes({
                       Nenhum atendimento vinculado a este paciente ainda.
                     </div>
                   )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {abaAtiva === "pagamentos" && (
+            <div className="patients-cadastro-layout" style={{ height: "100%" }}>
+              <div className="patients-cadastro-main" style={scrollInternoStyle}>
+                <div className="patients-section-card">
+                  <h4 className="patients-section-title">Checkout do paciente</h4>
+
+                  <div className="patients-form-grid">
+                    
+                    <div>
+                      <label>Atendimento do dia</label>
+                      <select
+                        className="select"
+                        value={pagamento.atendimentoId}
+                        onChange={(e) => selecionarAtendimentoPagamento(e.target.value)}
+                      >
+                        <option value="">Selecionar atendimento/agendamento</option>
+                        {atendimentosDoDia.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {(item.paciente || item.nomePaciente || "Paciente")} -{" "}
+                            {item.data || "Hoje"} {item.hora || ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label>Nome do paciente</label>
+                      <input
+                        className="input"
+                        name="paciente"
+                        value={pagamento.paciente}
+                        onChange={handlePagamentoChange}
+                        placeholder="Nome do paciente"
+                      />
+                    </div>
+
+                    <div>
+                      <label>CPF</label>
+                      <input
+                        className="input"
+                        name="cpf"
+                        value={pagamento.cpf}
+                        onChange={handlePagamentoChange}
+                        placeholder="CPF"
+                      />
+                    </div>
+
+                    <div>
+                      <label>Telefone</label>
+                      <input
+                        className="input"
+                        name="telefone"
+                        value={pagamento.telefone}
+                        onChange={handlePagamentoChange}
+                        placeholder="Telefone"
+                      />
+                    </div>
+
+                    <div>
+                      <label>Tipo de atendimento ou serviço</label>
+                      <input
+                        className="input"
+                        name="tipoAtendimento"
+                        value={pagamento.tipoAtendimento}
+                        onChange={handlePagamentoChange}
+                        placeholder="Consulta, procedimento ou exame"
+                      />
+                    </div>
+
+                    <div>
+                      <label>Valor</label>
+                      <input
+                        className="input"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        name="valor"
+                        value={pagamento.valor}
+                        onChange={handlePagamentoChange}
+                        placeholder="0,00"
+                      />
+                    </div>
+
+                    <div>
+                      <label>Forma de pagamento</label>
+                      <select
+                        className="select"
+                        name="formaPagamento"
+                        value={pagamento.formaPagamento}
+                        onChange={handlePagamentoChange}
+                      >
+                        <option>Dinheiro</option>
+                        <option>Pix</option>
+                        <option>Cartão de Débito</option>
+                        <option>Cartão de Crédito</option>
+                        <option>Convênio</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label>Status do pagamento</label>
+                      <select
+                        className="select"
+                        name="statusPagamento"
+                        value={pagamento.statusPagamento}
+                        onChange={handlePagamentoChange}
+                      >
+                        <option>Pago</option>
+                        <option>Pendente</option>
+                        <option>Cancelado</option>
+                        <option>Cortesia</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label>Data do pagamento</label>
+                      <input
+                        className="input"
+                        type="date"
+                        name="dataPagamento"
+                        value={pagamento.dataPagamento}
+                        onChange={handlePagamentoChange}
+                      />
+                    </div>
+
+                    <div className="patients-full-width">
+                      <label>Observações</label>
+                      <textarea
+                        className="textarea"
+                        name="observacoes"
+                        value={pagamento.observacoes}
+                        onChange={handlePagamentoChange}
+                        placeholder="Observações do pagamento"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="patients-form-actions">
+                    <button
+                      onClick={salvarPagamento}
+                      className="primary-btn"
+                      disabled={salvandoPagamento}
+                    >
+                      {salvandoPagamento ? "Salvando..." : "Salvar pagamento"}
+                    </button>
+                    <button onClick={limparPagamento} className="secondary-btn">
+                      Limpar
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="patients-cadastro-side" style={{ overflowY: "auto" }}>
+                <div className="page-card patients-card patients-side-highlight">
+                  <h4 className="patients-section-title">Resumo do pagamento</h4>
+
+                  <div className="patients-summary-card-item">
+                    <span>Paciente</span>
+                    <strong>{pagamento.paciente || "—"}</strong>
+                  </div>
+
+                  <div className="patients-summary-card-item">
+                    <span>Serviço</span>
+                    <strong>{pagamento.tipoAtendimento || "—"}</strong>
+                  </div>
+
+                  <div className="patients-summary-card-item">
+                    <span>Valor</span>
+                    <strong>
+                      {pagamento.valor
+                        ? Number(String(pagamento.valor).replace(",", ".")).toLocaleString(
+                            "pt-BR",
+                            {
+                              style: "currency",
+                              currency: "BRL",
+                            }
+                          )
+                        : "—"}
+                    </strong>
+                  </div>
+
+                  <div className="patients-summary-card-item">
+                    <span>Forma</span>
+                    <strong>{pagamento.formaPagamento || "—"}</strong>
+                  </div>
+
+                  <div className="patients-summary-card-item">
+                    <span>Status</span>
+                    <strong>{pagamento.statusPagamento || "—"}</strong>
+                  </div>
+
+                  <div className="muted-box" style={{ marginTop: "12px" }}>
+                    Ao salvar, este registro será gravado na coleção pagamentos do
+                    Firebase e poderá ser consumido automaticamente pela área Financeiro
+                    em Contas a Receber e Movimentações.
+                  </div>
                 </div>
               </div>
             </div>

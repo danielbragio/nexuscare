@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { sendPasswordResetEmail } from "firebase/auth";
+import { auth } from "../services/firebase";
 import {
   allModules,
   rolePermissions,
@@ -8,6 +10,7 @@ export default function Administracao({
   users = [],
   onCriarUsuario,
   onAtualizarUsuario,
+  onExcluirUsuario,
 }) {
   const [abaAtiva, setAbaAtiva] = useState("usuarios");
   const [busca, setBusca] = useState("");
@@ -18,9 +21,11 @@ export default function Administracao({
     email: "",
     username: "",
     senha: "",
+    confirmarSenha: "",
     role: "recepcao",
     crm: "",
     coren: "",
+    especialidade: "",
     ativo: true,
     permissions: rolePermissions.recepcao,
   });
@@ -36,7 +41,8 @@ export default function Administracao({
         item.login?.toLowerCase().includes(termo) ||
         item.role?.toLowerCase().includes(termo) ||
         item.crm?.toLowerCase().includes(termo) ||
-        item.coren?.toLowerCase().includes(termo)
+        item.coren?.toLowerCase().includes(termo) ||
+        item.especialidade?.toLowerCase().includes(termo)
       );
     });
   }, [users, busca]);
@@ -52,9 +58,11 @@ export default function Administracao({
       email: usuario.email || "",
       username: usuario.username || usuario.usuario || usuario.login || "",
       senha: "",
+      confirmarSenha: "",
       role: usuario.role || "recepcao",
       crm: usuario.crm || "",
       coren: usuario.coren || "",
+      especialidade: usuario.especialidade || "",
       ativo: usuario.ativo !== false,
       permissions:
         Array.isArray(usuario.permissions) && usuario.permissions.length > 0
@@ -70,9 +78,11 @@ export default function Administracao({
       email: "",
       username: "",
       senha: "",
+      confirmarSenha: "",
       role: "recepcao",
       crm: "",
       coren: "",
+      especialidade: "",
       ativo: true,
       permissions: rolePermissions.recepcao,
     });
@@ -92,6 +102,7 @@ export default function Administracao({
       ...prev,
       role,
       permissions: rolePermissions[role] || [],
+      especialidade: role === "medico" ? prev.especialidade : "",
     }));
   }
 
@@ -124,8 +135,23 @@ export default function Administracao({
       return;
     }
 
+    if (!editandoId && !form.confirmarSenha) {
+      alert("Confirme a senha do usuário.");
+      return;
+    }
+
+    if (!editandoId && form.senha !== form.confirmarSenha) {
+      alert("As senhas não coincidem.");
+      return;
+    }
+
     if (form.role === "medico" && !form.crm) {
       alert("Informe o CRM do médico.");
+      return;
+    }
+
+    if (form.role === "medico" && !form.especialidade) {
+      alert("Informe a especialidade do médico.");
       return;
     }
 
@@ -147,6 +173,7 @@ export default function Administracao({
         role: form.role,
         crm: form.role === "medico" ? form.crm : "",
         coren: form.role === "enfermagem" ? form.coren : "",
+        especialidade: form.role === "medico" ? form.especialidade : "",
         ativo: form.ativo,
         permissions: form.permissions,
       };
@@ -196,6 +223,42 @@ export default function Administracao({
     onAtualizarUsuario(usuario.id, {
       ativo: !usuario.ativo,
     });
+  }
+
+  async function redefinirSenha(usuario) {
+    if (!usuario?.email) {
+      alert("Este usuário não possui e-mail cadastrado.");
+      return;
+    }
+
+    try {
+      await sendPasswordResetEmail(auth, usuario.email);
+      alert("E-mail de redefinição de senha enviado com sucesso.");
+    } catch (error) {
+      console.error("Erro ao enviar redefinição de senha:", error);
+      alert("Não foi possível enviar o e-mail de redefinição de senha.");
+    }
+  }
+
+  async function excluirUsuario(usuario) {
+    if (!onExcluirUsuario) {
+      alert("Função de exclusão ainda não configurada.");
+      return;
+    }
+
+    const confirmar = window.confirm(
+      `Tem certeza que deseja excluir o usuário ${usuario.nome || usuario.email}?`
+    );
+
+    if (!confirmar) return;
+
+    try {
+      await onExcluirUsuario(usuario);
+      alert("Usuário excluído com sucesso.");
+    } catch (error) {
+      console.error("Erro ao excluir usuário:", error);
+      alert("Não foi possível excluir o usuário.");
+    }
   }
 
   const totalUsuarios = users.length;
@@ -324,6 +387,20 @@ export default function Administracao({
                     </div>
                   )}
 
+                  {!editandoId && (
+                    <div>
+                      <label>Confirmar senha</label>
+                      <input
+                        className="input"
+                        name="confirmarSenha"
+                        type="password"
+                        value={form.confirmarSenha}
+                        onChange={handleChange}
+                        placeholder="Confirme a senha"
+                      />
+                    </div>
+                  )}
+
                   <div>
                     <label>Perfil base</label>
                     <select
@@ -356,6 +433,22 @@ export default function Administracao({
                     </div>
                   )}
 
+                  {form.role === "medico" && (
+                    <div>
+                      <label>Especialidade do médico</label>
+                      <select
+                        className="select"
+                        name="especialidade"
+                        value={form.especialidade}
+                        onChange={handleChange}
+                      >
+                        <option value="">Selecione</option>
+                        <option value="Clínico">Clínico</option>
+                        <option value="Odontologia">Odontologia</option>
+                      </select>
+                    </div>
+                  )}
+
                   {form.role === "enfermagem" && (
                     <div>
                       <label>COREN da enfermagem</label>
@@ -366,6 +459,19 @@ export default function Administracao({
                         onChange={handleChange}
                         placeholder="Ex.: COREN-ES 000000"
                       />
+                    </div>
+                  )}
+
+                  {editandoId && (
+                    <div>
+                      <label>Senha</label>
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        onClick={() => redefinirSenha(form)}
+                      >
+                        Enviar redefinição de senha
+                      </button>
                     </div>
                   )}
 
@@ -445,6 +551,13 @@ export default function Administracao({
                   <div className="muted-box" style={{ marginBottom: "12px" }}>
                     <strong>CRM</strong>
                     <div>{form.crm || "—"}</div>
+                  </div>
+                )}
+
+                {form.role === "medico" && (
+                  <div className="muted-box" style={{ marginBottom: "12px" }}>
+                    <strong>Especialidade</strong>
+                    <div>{form.especialidade || "—"}</div>
                   </div>
                 )}
 
@@ -536,6 +649,20 @@ export default function Administracao({
                             onClick={() => toggleAtivo(usuario)}
                           >
                             {usuario.ativo === false ? "Ativar" : "Inativar"}
+                          </button>
+
+                          <button
+                            className="secondary-btn"
+                            onClick={() => redefinirSenha(usuario)}
+                          >
+                            Senha
+                          </button>
+
+                          <button
+                            className="danger-btn"
+                            onClick={() => excluirUsuario(usuario)}
+                          >
+                            Excluir
                           </button>
                         </div>
                       </td>

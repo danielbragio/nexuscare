@@ -428,6 +428,14 @@ export default function App() {
     await updateDoc(doc(db, "users", id), payload);
   }
 
+  async function excluirUsuario(usuario) {
+    if (!usuario?.id) {
+      throw new Error("Usuário inválido para exclusão.");
+    }
+
+    await deleteDoc(doc(db, "users", usuario.id));
+  }
+
   async function selecionarConsultorio(numero) {
     if (!firebaseUser) return;
 
@@ -589,6 +597,7 @@ export default function App() {
             users={users}
             onCriarUsuario={criarUsuario}
             onAtualizarUsuario={atualizarUsuario}
+            onExcluirUsuario={excluirUsuario}
           />
         );
 
