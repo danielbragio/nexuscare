@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 function normalizarTipo(tipo) {
   const texto = (tipo || "").toString().trim().toLowerCase();
 
-  if (texto.includes("pronto")) return "Pronto Atendimento";
+  if (texto.includes("pronto")) return "Atendimento Imediato";
   return "Agendamento";
 }
 
@@ -61,7 +61,7 @@ export default function Medicos({
 
   const consultasProntoAtendimento = useMemo(() => {
     return consultasFiltradas.filter(
-      (item) => normalizarTipo(item.tipoAtendimento) === "Pronto Atendimento"
+      (item) => normalizarTipo(item.tipoAtendimento) === "Atendimento Imediato"
     );
   }, [consultasFiltradas]);
 
@@ -472,7 +472,7 @@ export default function Medicos({
               className={`medical-tab ${abaAtendimento === "prontoatendimento" ? "active" : ""}`}
               onClick={() => setAbaAtendimento("prontoatendimento")}
             >
-              Pronto atendimento
+              Atendimento Imediato
             </button>
 
             <button
@@ -515,7 +515,7 @@ export default function Medicos({
       <div className="page-header">
         <h1>Médicos</h1>
         <p className="page-subtitle">
-          Atendimento médico com abas de agendados e pronto atendimento.
+          Atendimento médico com abas de agendados e atendimento imediato.
         </p>
       </div>
 
@@ -542,7 +542,7 @@ export default function Medicos({
               className={`medical-tab ${abaLista === "prontoatendimento" ? "active" : ""}`}
               onClick={() => setAbaLista("prontoatendimento")}
             >
-              Pronto Atendimento
+              Atendimento Imediato
             </button>
           </div>
 
@@ -562,7 +562,7 @@ export default function Medicos({
           </div>
 
           <div className="muted-box" style={{ marginBottom: "12px" }}>
-            Pronto atendimento: <strong>{consultasProntoAtendimento.length}</strong>
+            Atendimento imediato: <strong>{consultasProntoAtendimento.length}</strong>
           </div>
 
           <div className="muted-box">

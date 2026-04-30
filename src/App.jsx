@@ -27,6 +27,7 @@ import { hasPermission } from "./config/permissions";
 
 import Dashboard from "./pages/Dashboard";
 import Pacientes from "./pages/Pacientes";
+import Pagamentos from "./pages/Pagamentos";
 import Agendamentos from "./pages/Agendamentos";
 import Medicos from "./pages/Medicos";
 import Enfermagem from "./pages/Enfermagem";
@@ -50,7 +51,7 @@ function FirebaseLoginScreen() {
     const termo = valorDigitado.trim();
     const termoLower = termo.toLowerCase();
 
-    if (termo.includes("@")) return termo;
+    if (termo.includes("@")) return termoLower;
 
     const buscas = [
       { campo: "usernameLower", valor: termoLower },
@@ -69,7 +70,15 @@ function FirebaseLoginScreen() {
       const snapshot = await getDocs(qUsuario);
 
       if (!snapshot.empty) {
-        return snapshot.docs[0].data().email;
+        const dadosUsuario = snapshot.docs[0].data();
+
+        if (dadosUsuario?.ativo === false) {
+          throw new Error("USUARIO_INATIVO");
+        }
+
+        if (dadosUsuario?.email) {
+          return String(dadosUsuario.email).trim().toLowerCase();
+        }
       }
     }
 
@@ -77,7 +86,7 @@ function FirebaseLoginScreen() {
   }
 
   async function entrar() {
-    if (!usuario || !senha) {
+    if (!usuario.trim() || !senha) {
       setErro("Preencha usuário e senha.");
       return;
     }
@@ -95,8 +104,23 @@ function FirebaseLoginScreen() {
 
       await signInWithEmailAndPassword(auth, emailEncontrado, senha);
     } catch (error) {
-      console.error("Erro no login:", error);
-      setErro("Não foi possível entrar. Verifique usuário e senha.");
+      console.error("ERRO REAL DO LOGIN:", error);
+
+      if (error.message === "USUARIO_INATIVO") {
+        setErro("Usuário inativo. Procure o administrador.");
+      } else if (error.code === "auth/invalid-credential") {
+        setErro("Credencial inválida. Confira e-mail/usuário e senha.");
+      } else if (error.code === "auth/wrong-password") {
+        setErro("Senha incorreta.");
+      } else if (error.code === "auth/user-not-found") {
+        setErro("Usuário não encontrado no Firebase Authentication.");
+      } else if (error.code === "auth/invalid-email") {
+        setErro("E-mail inválido.");
+      } else if (error.code === "auth/too-many-requests") {
+        setErro("Muitas tentativas. Aguarde alguns minutos e tente novamente.");
+      } else {
+        setErro(`Não foi possível entrar. ${error.message || ""}`);
+      }
     } finally {
       setCarregando(false);
     }
@@ -121,7 +145,7 @@ function FirebaseLoginScreen() {
           <div className="login-info-list-v2">
             <div className="login-info-item-v2">
               <strong>Recepção integrada</strong>
-              <span>Cadastro, agendamento e pronto atendimento conectados.</span>
+              <span>Cadastro, agendamento e atendimento imediato conectados.</span>
             </div>
 
             <div className="login-info-item-v2">
@@ -139,18 +163,18 @@ function FirebaseLoginScreen() {
         <div className="login-card-v2">
           <div className="login-card-header-v2">
             <h2>Entrar</h2>
-            <p>Informe seu usuário e senha para acessar o NexusCare.</p>
+            <p>Informe seu usuário ou e-mail e senha para acessar o NexusCare.</p>
           </div>
 
           <div className="login-form-v2">
             <div className="login-field-v2">
-              <label>Usuário</label>
+              <label>Usuário ou e-mail</label>
               <input
                 className="login-input-v2"
                 type="text"
                 value={usuario}
                 onChange={(e) => setUsuario(e.target.value)}
-                placeholder="Digite seu usuário"
+                placeholder="Digite seu usuário ou e-mail"
                 autoComplete="username"
               />
             </div>
@@ -477,7 +501,7 @@ export default function App() {
   async function adicionarConsulta(novaConsulta) {
     await addDoc(collection(db, "appointments"), {
       ...novaConsulta,
-      status: "Agendada",
+      status: "agendado",
       prontuario: null,
       createdAt: serverTimestamp(),
     });
@@ -485,7 +509,7 @@ export default function App() {
 
   async function iniciarAtendimento(id) {
     await updateDoc(doc(db, "appointments", id), {
-      status: "Em atendimento",
+      status: "em_atendimento",
     });
   }
 
@@ -505,7 +529,7 @@ export default function App() {
     };
 
     await updateDoc(doc(db, "appointments", id), {
-      status: "Finalizado",
+      status: "finalizado",
       prontuario: prontuarioComProfissional,
       finalizadoEm: serverTimestamp(),
     });
@@ -514,9 +538,9 @@ export default function App() {
   const indicadores = useMemo(() => {
     return {
       total: consultas.length,
-      agendadas: consultas.filter((c) => c.status === "Agendada").length,
-      emAtendimento: consultas.filter((c) => c.status === "Em atendimento").length,
-      altas: consultas.filter((c) => c.status === "Finalizado").length,
+      agendadas: consultas.filter((c) => c.status === "agendado").length,
+      emAtendimento: consultas.filter((c) => c.status === "em_atendimento").length,
+      altas: consultas.filter((c) => c.status === "finalizado").length,
       totalPacientes: pacientes.length,
     };
   }, [consultas, pacientes]);
@@ -525,6 +549,7 @@ export default function App() {
     const orderedViews = [
       "dashboard",
       "pacientes",
+      "pagamentos",
       "agendamentos",
       "prontuario",
       "medicos",
@@ -564,6 +589,9 @@ export default function App() {
             onAdicionarConsulta={adicionarConsulta}
           />
         );
+
+      case "pagamentos":
+        return <Pagamentos pacientes={pacientes} consultas={consultas} />;
 
       case "agendamentos":
         return <Agendamentos consultas={consultas} />;
@@ -712,6 +740,7 @@ export default function App() {
           <div className="menu-group">
             {menu("Dashboard", "dashboard")}
             {menu("Recepção", "pacientes")}
+            {menu("Pagamentos", "pagamentos")}
             {menu("Agendamentos", "agendamentos")}
             {menu("Prontuário", "prontuario")}
           </div>
@@ -756,7 +785,11 @@ export default function App() {
         <div className="topbar">
           <div>
             <div className="topbar-title">
-              {view === "pacientes" ? "Recepção" : view.charAt(0).toUpperCase() + view.slice(1)}
+              {view === "pacientes"
+                ? "Recepção"
+                : view === "pagamentos"
+                ? "Pagamentos"
+                : view.charAt(0).toUpperCase() + view.slice(1)}
             </div>
             <div className="topbar-subtitle">
               {consultorioAtual

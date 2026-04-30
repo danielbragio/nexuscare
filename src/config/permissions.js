@@ -1,6 +1,7 @@
 export const allModules = [
   { key: "dashboard", label: "Painel" },
   { key: "pacientes", label: "Pacientes" },
+  { key: "pagamentos", label: "Pagamentos" },
   { key: "agendamentos", label: "Agendamentos" },
   { key: "medicos", label: "Médicos" },
   { key: "enfermagem", label: "Enfermagem" },
@@ -17,11 +18,11 @@ export const allModules = [
 
 export const rolePermissions = {
   admin: allModules.map((item) => item.key),
-  recepcao: ["dashboard", "pacientes", "agendamentos"],
+  recepcao: ["dashboard", "pacientes", "pagamentos", "agendamentos"],
   medico: ["dashboard", "medicos", "prontuario"],
   enfermagem: ["dashboard", "enfermagem", "prontuario"],
   odonto: ["dashboard", "odonto", "prontuario"],
-  financeiro: ["dashboard", "financeiro", "faturamento", "relatorios"],
+  financeiro: ["dashboard", "pagamentos", "financeiro", "faturamento", "relatorios"],
   estoque: ["dashboard", "estoque"],
   telemedicina: ["dashboard", "telemedicina"],
 };

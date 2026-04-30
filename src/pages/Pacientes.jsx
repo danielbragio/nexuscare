@@ -23,27 +23,10 @@ export default function Pacientes({
   const { userData, firebaseUser } = useAuth();
 
   const [abaAtiva, setAbaAtiva] = useState("cadastro");
-  const [busca, setBusca] = useState("");
   const [buscaCadastro, setBuscaCadastro] = useState("");
   const [salvandoPaciente, setSalvandoPaciente] = useState(false);
   const [salvandoConsulta, setSalvandoConsulta] = useState(false);
-  const [salvandoPagamento, setSalvandoPagamento] = useState(false);
 
-  const [pagamento, setPagamento] = useState({
-    pacienteId: "",
-    paciente: "",
-    cpf: "",
-    telefone: "",
-    atendimentoId: "",
-    tipoAtendimento: "",
-    valor: "",
-    formaPagamento: "Dinheiro",
-    statusPagamento: "Pago",
-    dataPagamento: new Date().toISOString().split("T")[0],
-    observacoes: "",
-  });
-
-  const [paginaLista, setPaginaLista] = useState(1);
   const [paginaBusca, setPaginaBusca] = useState(1);
   const itensPorPagina = 8;
 
@@ -141,130 +124,24 @@ export default function Pacientes({
     });
   }
 
-  function limparPagamento() {
-    setPagamento({
-      pacienteId: "",
-      paciente: "",
-      cpf: "",
-      telefone: "",
-      atendimentoId: "",
-      tipoAtendimento: "",
-      valor: "",
-      formaPagamento: "Dinheiro",
-      statusPagamento: "Pago",
-      dataPagamento: new Date().toISOString().split("T")[0],
-      observacoes: "",
-    });
+  function novoCadastro() {
+    limparFormulario();
+    setAbaAtiva("cadastro");
+
+    setTimeout(() => {
+      const campoNome = document.querySelector('input[name="nome"]');
+      if (campoNome) campoNome.focus();
+    }, 100);
   }
 
-  function handlePagamentoChange(e) {
-    const { name, value } = e.target;
-    setPagamento((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
-  }
+  function novoAtendimento() {
+    limparAgendamento();
+    setAbaAtiva("agendamento");
 
-  function selecionarPacientePagamento(pacienteId) {
-    const pacienteSelecionado = pacientes.find((item) => item.id === pacienteId);
-
-    setPagamento((prev) => ({
-      ...prev,
-      pacienteId: pacienteSelecionado?.id || "",
-      paciente: pacienteSelecionado?.nome || "",
-      cpf: pacienteSelecionado?.cpf || "",
-      telefone: pacienteSelecionado?.telefone || "",
-    }));
-  }
-
-  function selecionarAtendimentoPagamento(atendimentoId) {
-    const atendimentoSelecionado = consultas.find((item) => item.id === atendimentoId);
-
-    if (!atendimentoSelecionado) {
-      setPagamento((prev) => ({
-        ...prev,
-        atendimentoId: "",
-      }));
-      return;
-    }
-
-    const pacienteVinculado = pacientes.find(
-      (item) =>
-        item.cpf &&
-        atendimentoSelecionado.cpf &&
-        item.cpf === atendimentoSelecionado.cpf
-    );
-
-    setPagamento((prev) => ({
-      ...prev,
-      atendimentoId: atendimentoSelecionado.id || "",
-      pacienteId: pacienteVinculado?.id || prev.pacienteId || "",
-      paciente:
-        atendimentoSelecionado.paciente ||
-        atendimentoSelecionado.nomePaciente ||
-        prev.paciente ||
-        "",
-      cpf: atendimentoSelecionado.cpf || prev.cpf || "",
-      telefone: atendimentoSelecionado.telefone || prev.telefone || "",
-      tipoAtendimento:
-        atendimentoSelecionado.tipoAtendimento ||
-        atendimentoSelecionado.especialidade ||
-        prev.tipoAtendimento ||
-        "",
-    }));
-  }
-
-  async function salvarPagamento() {
-    if (
-      !pagamento.paciente ||
-      !pagamento.tipoAtendimento ||
-      !pagamento.valor ||
-      !pagamento.formaPagamento ||
-      !pagamento.statusPagamento ||
-      !pagamento.dataPagamento
-    ) {
-      alert("Preencha paciente, serviço, valor, forma, status e data do pagamento.");
-      return;
-    }
-
-    const valorNumerico = Number(String(pagamento.valor).replace(",", "."));
-
-    if (Number.isNaN(valorNumerico) || valorNumerico < 0) {
-      alert("Informe um valor válido para o pagamento.");
-      return;
-    }
-
-    try {
-      setSalvandoPagamento(true);
-
-      await addDoc(collection(db, "pagamentos"), {
-        pacienteId: pagamento.pacienteId || "",
-        paciente: pagamento.paciente,
-        cpf: pagamento.cpf || "",
-        telefone: pagamento.telefone || "",
-        atendimentoId: pagamento.atendimentoId || "",
-        tipoAtendimento: pagamento.tipoAtendimento,
-        valor: valorNumerico,
-        formaPagamento: pagamento.formaPagamento,
-        statusPagamento: pagamento.statusPagamento,
-        dataPagamento: pagamento.dataPagamento,
-        observacoes: pagamento.observacoes || "",
-        origem: "Recepção",
-        tipoMovimentacao: "Receita",
-        criadoPor:
-          userData?.nome || userData?.name || firebaseUser?.email || "Recepção",
-        criadoPorEmail: firebaseUser?.email || "",
-        criadoEm: serverTimestamp(),
-      });
-
-      limparPagamento();
-      alert("Pagamento registrado com sucesso. Ele já ficará disponível no Financeiro.");
-    } catch (error) {
-      console.error("Erro ao salvar pagamento:", error);
-      alert("Não foi possível registrar o pagamento.");
-    } finally {
-      setSalvandoPagamento(false);
-    }
+    setTimeout(() => {
+      const campoPaciente = document.querySelector('input[name="nomePaciente"]');
+      if (campoPaciente) campoPaciente.focus();
+    }, 100);
   }
 
   async function salvarPaciente() {
@@ -277,7 +154,7 @@ export default function Pacientes({
       setSalvandoPaciente(true);
       await onAdicionarPaciente(form);
       limparFormulario();
-      setAbaAtiva("lista");
+      setAbaAtiva("buscar");
       alert("Paciente salvo com sucesso.");
     } catch (error) {
       console.error("Erro ao salvar paciente:", error);
@@ -292,8 +169,8 @@ export default function Pacientes({
       !agendamento.nomePaciente ||
       !agendamento.cpf ||
       !agendamento.telefone ||
-      !agendamento.especialidade ||
       !agendamento.medico ||
+      !agendamento.especialidade ||
       !agendamento.data ||
       !agendamento.hora ||
       !agendamento.tipoAtendimento
@@ -314,11 +191,11 @@ export default function Pacientes({
         hora: agendamento.hora,
         observacoesRecepcao: agendamento.observacoesRecepcao,
         tipoAtendimento:
-          agendamento.tipoAtendimento === "Pronto Atendimento"
-            ? "Pronto Atendimento"
+          agendamento.tipoAtendimento === "Atendimento Imediato"
+            ? "Atendimento Imediato"
             : "Agendamento",
-        chegouHoje: agendamento.tipoAtendimento === "Pronto Atendimento",
-        fichaAberta: agendamento.tipoAtendimento === "Pronto Atendimento",
+        chegouHoje: agendamento.tipoAtendimento === "Atendimento Imediato",
+        fichaAberta: agendamento.tipoAtendimento === "Atendimento Imediato",
         tempoEsperaMinutos: 0,
       });
 
@@ -435,29 +312,14 @@ export default function Pacientes({
     setAbaAtiva("agendamento");
   }
 
-  function carregarParaPagamento(item) {
-    setPagamento((prev) => ({
-      ...prev,
-      pacienteId: item.id || "",
-      paciente: item.nome || "",
-      cpf: item.cpf || "",
-      telefone: item.telefone || "",
-    }));
-    setAbaAtiva("pagamentos");
-  }
-
-  const listaFiltrada = useMemo(() => {
-    return pacientes.filter((item) =>
-      (item.nome || "").toLowerCase().includes(busca.toLowerCase())
-    );
-  }, [pacientes, busca]);
-
   const buscaCadastroFiltrada = useMemo(() => {
     return pacientes.filter((item) => {
       const termo = buscaCadastro.toLowerCase();
       return (
         (item.nome || "").toLowerCase().includes(termo) ||
-        (item.cpf || "").toLowerCase().includes(termo)
+        (item.cpf || "").toLowerCase().includes(termo) ||
+        (item.telefone || "").toLowerCase().includes(termo) ||
+        (item.convenio || "").toLowerCase().includes(termo)
       );
     });
   }, [pacientes, buscaCadastro]);
@@ -470,24 +332,13 @@ export default function Pacientes({
     );
   }, [consultas, agendamento.nomePaciente, agendamento.cpf]);
 
-  const atendimentosDoDia = useMemo(() => {
-    const hoje = new Date().toISOString().split("T")[0];
-    return consultas.filter((item) => item.data === hoje || item.chegouHoje);
-  }, [consultas]);
-
   const totalPacientes = pacientes.length;
   const pacientesAtivos = pacientes.filter((item) => item.status === "Ativo").length;
   const pacientesRetorno = pacientes.filter((item) => item.status === "Retorno").length;
 
-  const totalPaginasLista = Math.max(1, Math.ceil(listaFiltrada.length / itensPorPagina));
   const totalPaginasBusca = Math.max(
     1,
     Math.ceil(buscaCadastroFiltrada.length / itensPorPagina)
-  );
-
-  const listaPaginada = listaFiltrada.slice(
-    (paginaLista - 1) * itensPorPagina,
-    paginaLista * itensPorPagina
   );
 
   const buscaPaginada = buscaCadastroFiltrada.slice(
@@ -531,7 +382,7 @@ export default function Pacientes({
       <div className="page-header">
         <h1>Recepção</h1>
         <p className="page-subtitle">
-          Cadastro completo, busca rápida e envio para o fluxo do médico.
+          Cadastro completo, busca rápida e envio para o fluxo do profissional.
         </p>
       </div>
 
@@ -539,10 +390,10 @@ export default function Pacientes({
         <div>
           <div className="patients-hero-kicker">Central de recepção</div>
           <h2 className="patients-hero-title">
-            Cadastro, busca e envio para agendamento ou pronto atendimento
+            Cadastro, busca e envio para agendamento ou atendimento imediato
           </h2>
           <p className="patients-hero-text">
-            Cadastre pacientes, localize registros existentes e envie para a fila do médico.
+            Cadastre pacientes, localize registros existentes e envie para a fila do profissional.
           </p>
         </div>
 
@@ -590,14 +441,11 @@ export default function Pacientes({
           </div>
 
           <div className="toolbar" style={{ marginBottom: 0 }}>
-            <button className="secondary-btn" onClick={limparFormulario}>
+            <button className="secondary-btn" onClick={novoCadastro}>
               Novo cadastro
             </button>
-            <button className="secondary-btn" onClick={limparAgendamento}>
+            <button className="secondary-btn" onClick={novoAtendimento}>
               Limpar atendimento
-            </button>
-            <button className="secondary-btn" onClick={limparPagamento}>
-              Limpar pagamento
             </button>
           </div>
         </div>
@@ -621,27 +469,10 @@ export default function Pacientes({
           </button>
 
           <button
-            className={`patients-tab ${abaAtiva === "lista" ? "active" : ""}`}
-            onClick={() => {
-              setAbaAtiva("lista");
-              setPaginaLista(1);
-            }}
-          >
-            Lista de pacientes
-          </button>
-
-          <button
             className={`patients-tab ${abaAtiva === "agendamento" ? "active" : ""}`}
             onClick={() => setAbaAtiva("agendamento")}
           >
             Encaminhar atendimento
-          </button>
-
-          <button
-            className={`patients-tab ${abaAtiva === "pagamentos" ? "active" : ""}`}
-            onClick={() => setAbaAtiva("pagamentos")}
-          >
-            Pagamentos
           </button>
         </div>
 
@@ -890,7 +721,7 @@ export default function Pacientes({
                     setBuscaCadastro(e.target.value);
                     setPaginaBusca(1);
                   }}
-                  placeholder="Buscar por nome ou CPF"
+                  placeholder="Buscar por nome, CPF, telefone ou convênio"
                 />
               </div>
 
@@ -902,6 +733,7 @@ export default function Pacientes({
                       <th>CPF</th>
                       <th>Telefone</th>
                       <th>Convênio</th>
+                      <th>Status</th>
                       <th>Ações</th>
                     </tr>
                   </thead>
@@ -912,6 +744,9 @@ export default function Pacientes({
                         <td>{item.cpf}</td>
                         <td>{item.telefone}</td>
                         <td>{item.convenio}</td>
+                        <td>
+                          <span className={badgeClass(item.status)}>{item.status}</span>
+                        </td>
                         <td>
                           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                             <button
@@ -926,13 +761,6 @@ export default function Pacientes({
                               onClick={() => carregarParaAtendimento(item)}
                             >
                               Encaminhar
-                            </button>
-
-                            <button
-                              className="secondary-btn"
-                              onClick={() => carregarParaPagamento(item)}
-                            >
-                              Pagamento
                             </button>
 
                             {isAdmin && (
@@ -950,7 +778,7 @@ export default function Pacientes({
 
                     {buscaCadastroFiltrada.length === 0 && (
                       <tr>
-                        <td colSpan="5">Nenhum cadastro encontrado.</td>
+                        <td colSpan="6">Nenhum cadastro encontrado.</td>
                       </tr>
                     )}
                   </tbody>
@@ -975,79 +803,6 @@ export default function Pacientes({
                   disabled={paginaBusca >= totalPaginasBusca}
                   onClick={() =>
                     setPaginaBusca((prev) => Math.min(totalPaginasBusca, prev + 1))
-                  }
-                >
-                  Próxima
-                </button>
-              </div>
-            </div>
-          )}
-
-          {abaAtiva === "lista" && (
-            <div style={scrollInternoStyle}>
-              <div className="toolbar">
-                <input
-                  className="input search-input"
-                  value={busca}
-                  onChange={(e) => {
-                    setBusca(e.target.value);
-                    setPaginaLista(1);
-                  }}
-                  placeholder="Buscar paciente por nome"
-                />
-              </div>
-
-              <div style={tabelaScrollStyle}>
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>Nome</th>
-                      <th>CPF</th>
-                      <th>Telefone</th>
-                      <th>Convênio</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {listaPaginada.map((item) => (
-                      <tr key={item.id}>
-                        <td>{item.nome}</td>
-                        <td>{item.cpf}</td>
-                        <td>{item.telefone}</td>
-                        <td>{item.convenio}</td>
-                        <td>
-                          <span className={badgeClass(item.status)}>{item.status}</span>
-                        </td>
-                      </tr>
-                    ))}
-
-                    {listaFiltrada.length === 0 && (
-                      <tr>
-                        <td colSpan="5">Nenhum paciente encontrado.</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: 12 }}>
-                <button
-                  className="secondary-btn"
-                  disabled={paginaLista === 1}
-                  onClick={() => setPaginaLista((prev) => Math.max(1, prev - 1))}
-                >
-                  Anterior
-                </button>
-
-                <span>
-                  Página {paginaLista} de {totalPaginasLista}
-                </span>
-
-                <button
-                  className="secondary-btn"
-                  disabled={paginaLista >= totalPaginasLista}
-                  onClick={() =>
-                    setPaginaLista((prev) => Math.min(totalPaginasLista, prev + 1))
                   }
                 >
                   Próxima
@@ -1105,8 +860,19 @@ export default function Pacientes({
                         onChange={handleAgendamentoChange}
                       >
                         <option value="Agendamento">Agendamento</option>
-                        <option value="Pronto Atendimento">Pronto Atendimento</option>
+                        <option value="Atendimento Imediato">Atendimento Imediato</option>
                       </select>
+                    </div>
+
+                    <div>
+                      <label>Profissional</label>
+                      <input
+                        className="input"
+                        name="medico"
+                        value={agendamento.medico}
+                        onChange={handleAgendamentoChange}
+                        placeholder="Nome do profissional"
+                      />
                     </div>
 
                     <div>
@@ -1116,18 +882,7 @@ export default function Pacientes({
                         name="especialidade"
                         value={agendamento.especialidade}
                         onChange={handleAgendamentoChange}
-                        placeholder="Ex.: Clínico Geral"
-                      />
-                    </div>
-
-                    <div>
-                      <label>Médico</label>
-                      <input
-                        className="input"
-                        name="medico"
-                        value={agendamento.medico}
-                        onChange={handleAgendamentoChange}
-                        placeholder="Nome do médico"
+                        placeholder="Ex.: Médico, Enfermeiro, Odontólogo, Fisioterapeuta"
                       />
                     </div>
 
@@ -1171,7 +926,7 @@ export default function Pacientes({
                       className="primary-btn"
                       disabled={salvandoConsulta}
                     >
-                      {salvandoConsulta ? "Enviando..." : "Enviar para o médico"}
+                      {salvandoConsulta ? "Enviando..." : "Enviar para o profissional"}
                     </button>
                     <button onClick={limparAgendamento} className="secondary-btn">
                       Limpar
@@ -1196,8 +951,8 @@ export default function Pacientes({
                             {item.data} às {item.hora}
                           </strong>
                           <div>{item.tipoAtendimento}</div>
-                          <div>{item.especialidade}</div>
-                          <div>{item.medico}</div>
+                          <div>Profissional: {item.medico}</div>
+                          <div>Especialidade: {item.especialidade}</div>
                           <div>Status: {item.status}</div>
                         </div>
                       ))}
@@ -1207,207 +962,6 @@ export default function Pacientes({
                       Nenhum atendimento vinculado a este paciente ainda.
                     </div>
                   )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {abaAtiva === "pagamentos" && (
-            <div className="patients-cadastro-layout" style={{ height: "100%" }}>
-              <div className="patients-cadastro-main" style={scrollInternoStyle}>
-                <div className="patients-section-card">
-                  <h4 className="patients-section-title">Checkout do paciente</h4>
-
-                  <div className="patients-form-grid">
-                    
-                    <div>
-                      <label>Atendimento do dia</label>
-                      <select
-                        className="select"
-                        value={pagamento.atendimentoId}
-                        onChange={(e) => selecionarAtendimentoPagamento(e.target.value)}
-                      >
-                        <option value="">Selecionar atendimento/agendamento</option>
-                        {atendimentosDoDia.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {(item.paciente || item.nomePaciente || "Paciente")} -{" "}
-                            {item.data || "Hoje"} {item.hora || ""}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label>Nome do paciente</label>
-                      <input
-                        className="input"
-                        name="paciente"
-                        value={pagamento.paciente}
-                        onChange={handlePagamentoChange}
-                        placeholder="Nome do paciente"
-                      />
-                    </div>
-
-                    <div>
-                      <label>CPF</label>
-                      <input
-                        className="input"
-                        name="cpf"
-                        value={pagamento.cpf}
-                        onChange={handlePagamentoChange}
-                        placeholder="CPF"
-                      />
-                    </div>
-
-                    <div>
-                      <label>Telefone</label>
-                      <input
-                        className="input"
-                        name="telefone"
-                        value={pagamento.telefone}
-                        onChange={handlePagamentoChange}
-                        placeholder="Telefone"
-                      />
-                    </div>
-
-                    <div>
-                      <label>Tipo de atendimento ou serviço</label>
-                      <input
-                        className="input"
-                        name="tipoAtendimento"
-                        value={pagamento.tipoAtendimento}
-                        onChange={handlePagamentoChange}
-                        placeholder="Consulta, procedimento ou exame"
-                      />
-                    </div>
-
-                    <div>
-                      <label>Valor</label>
-                      <input
-                        className="input"
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        name="valor"
-                        value={pagamento.valor}
-                        onChange={handlePagamentoChange}
-                        placeholder="0,00"
-                      />
-                    </div>
-
-                    <div>
-                      <label>Forma de pagamento</label>
-                      <select
-                        className="select"
-                        name="formaPagamento"
-                        value={pagamento.formaPagamento}
-                        onChange={handlePagamentoChange}
-                      >
-                        <option>Dinheiro</option>
-                        <option>Pix</option>
-                        <option>Cartão de Débito</option>
-                        <option>Cartão de Crédito</option>
-                        <option>Convênio</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label>Status do pagamento</label>
-                      <select
-                        className="select"
-                        name="statusPagamento"
-                        value={pagamento.statusPagamento}
-                        onChange={handlePagamentoChange}
-                      >
-                        <option>Pago</option>
-                        <option>Pendente</option>
-                        <option>Cancelado</option>
-                        <option>Cortesia</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label>Data do pagamento</label>
-                      <input
-                        className="input"
-                        type="date"
-                        name="dataPagamento"
-                        value={pagamento.dataPagamento}
-                        onChange={handlePagamentoChange}
-                      />
-                    </div>
-
-                    <div className="patients-full-width">
-                      <label>Observações</label>
-                      <textarea
-                        className="textarea"
-                        name="observacoes"
-                        value={pagamento.observacoes}
-                        onChange={handlePagamentoChange}
-                        placeholder="Observações do pagamento"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="patients-form-actions">
-                    <button
-                      onClick={salvarPagamento}
-                      className="primary-btn"
-                      disabled={salvandoPagamento}
-                    >
-                      {salvandoPagamento ? "Salvando..." : "Salvar pagamento"}
-                    </button>
-                    <button onClick={limparPagamento} className="secondary-btn">
-                      Limpar
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="patients-cadastro-side" style={{ overflowY: "auto" }}>
-                <div className="page-card patients-card patients-side-highlight">
-                  <h4 className="patients-section-title">Resumo do pagamento</h4>
-
-                  <div className="patients-summary-card-item">
-                    <span>Paciente</span>
-                    <strong>{pagamento.paciente || "—"}</strong>
-                  </div>
-
-                  <div className="patients-summary-card-item">
-                    <span>Serviço</span>
-                    <strong>{pagamento.tipoAtendimento || "—"}</strong>
-                  </div>
-
-                  <div className="patients-summary-card-item">
-                    <span>Valor</span>
-                    <strong>
-                      {pagamento.valor
-                        ? Number(String(pagamento.valor).replace(",", ".")).toLocaleString(
-                            "pt-BR",
-                            {
-                              style: "currency",
-                              currency: "BRL",
-                            }
-                          )
-                        : "—"}
-                    </strong>
-                  </div>
-
-                  <div className="patients-summary-card-item">
-                    <span>Forma</span>
-                    <strong>{pagamento.formaPagamento || "—"}</strong>
-                  </div>
-
-                  <div className="patients-summary-card-item">
-                    <span>Status</span>
-                    <strong>{pagamento.statusPagamento || "—"}</strong>
-                  </div>
-
-                  <div className="muted-box" style={{ marginTop: "12px" }}>
-                    Ao salvar, este registro será gravado na coleção pagamentos do
-                    Firebase e poderá ser consumido automaticamente pela área Financeiro
-                    em Contas a Receber e Movimentações.
-                  </div>
                 </div>
               </div>
             </div>
