@@ -6,6 +6,16 @@ import {
   rolePermissions,
 } from "../config/permissions";
 
+const DIAS_ATENDIMENTO = [
+  "domingo",
+  "segunda-feira",
+  "terça-feira",
+  "quarta-feira",
+  "quinta-feira",
+  "sexta-feira",
+  "sábado",
+];
+
 export default function Administracao({
   users = [],
   onCriarUsuario,
@@ -15,6 +25,7 @@ export default function Administracao({
   const [abaAtiva, setAbaAtiva] = useState("usuarios");
   const [busca, setBusca] = useState("");
   const [editandoId, setEditandoId] = useState(null);
+  const [novoHorario, setNovoHorario] = useState("");
 
   const [form, setForm] = useState({
     nome: "",
@@ -28,6 +39,13 @@ export default function Administracao({
     especialidade: "",
     ativo: true,
     permissions: rolePermissions.recepcao,
+    diasAtendimento: [],
+    horarios: [],
+    horaInicio: "",
+    horaFim: "",
+    intervalo: 30,
+    pausaInicio: "",
+    pausaFim: "",
   });
 
   const usuariosFiltrados = useMemo(() => {
@@ -68,11 +86,21 @@ export default function Administracao({
         Array.isArray(usuario.permissions) && usuario.permissions.length > 0
           ? usuario.permissions
           : rolePermissions[usuario.role] || [],
+      diasAtendimento: Array.isArray(usuario.diasAtendimento)
+        ? usuario.diasAtendimento
+        : [],
+      horarios: Array.isArray(usuario.horarios) ? usuario.horarios : [],
+      horaInicio: usuario.horaInicio || "",
+      horaFim: usuario.horaFim || "",
+      intervalo: usuario.intervalo || 30,
+      pausaInicio: usuario.pausaInicio || "",
+      pausaFim: usuario.pausaFim || "",
     });
   }, [editandoId, users]);
 
   function limparFormulario() {
     setEditandoId(null);
+    setNovoHorario("");
     setForm({
       nome: "",
       email: "",
@@ -85,6 +113,13 @@ export default function Administracao({
       especialidade: "",
       ativo: true,
       permissions: rolePermissions.recepcao,
+      diasAtendimento: [],
+      horarios: [],
+      horaInicio: "",
+      horaFim: "",
+      intervalo: 30,
+      pausaInicio: "",
+      pausaFim: "",
     });
   }
 
@@ -103,6 +138,34 @@ export default function Administracao({
       role,
       permissions: rolePermissions[role] || [],
       especialidade: role === "medico" ? prev.especialidade : "",
+      diasAtendimento:
+        role === "medico" || role === "enfermagem" || role === "odonto"
+          ? prev.diasAtendimento
+          : [],
+      horarios:
+        role === "medico" || role === "enfermagem" || role === "odonto"
+          ? prev.horarios
+          : [],
+      horaInicio:
+        role === "medico" || role === "enfermagem" || role === "odonto"
+          ? prev.horaInicio
+          : "",
+      horaFim:
+        role === "medico" || role === "enfermagem" || role === "odonto"
+          ? prev.horaFim
+          : "",
+      intervalo:
+        role === "medico" || role === "enfermagem" || role === "odonto"
+          ? prev.intervalo
+          : 30,
+      pausaInicio:
+        role === "medico" || role === "enfermagem" || role === "odonto"
+          ? prev.pausaInicio
+          : "",
+      pausaFim:
+        role === "medico" || role === "enfermagem" || role === "odonto"
+          ? prev.pausaFim
+          : "",
     }));
   }
 
@@ -122,6 +185,121 @@ export default function Administracao({
         permissions: [...prev.permissions, modulo],
       };
     });
+  }
+
+  function toggleDiaAtendimento(dia) {
+    setForm((prev) => {
+      const existe = prev.diasAtendimento.includes(dia);
+
+      if (existe) {
+        return {
+          ...prev,
+          diasAtendimento: prev.diasAtendimento.filter((item) => item !== dia),
+        };
+      }
+
+      return {
+        ...prev,
+        diasAtendimento: [...prev.diasAtendimento, dia],
+      };
+    });
+  }
+
+  function adicionarHorario() {
+    if (!novoHorario) {
+      alert("Informe um horário.");
+      return;
+    }
+
+    if (form.horarios.includes(novoHorario)) {
+      alert("Este horário já foi adicionado.");
+      return;
+    }
+
+    setForm((prev) => ({
+      ...prev,
+      horarios: [...prev.horarios, novoHorario].sort(),
+    }));
+
+    setNovoHorario("");
+  }
+
+  function removerHorario(horario) {
+    setForm((prev) => ({
+      ...prev,
+      horarios: prev.horarios.filter((item) => item !== horario),
+    }));
+  }
+
+  function gerarHorariosAutomaticos() {
+    if (!form.horaInicio || !form.horaFim) {
+      alert("Preencha hora início e hora fim.");
+      return;
+    }
+
+    const [horaInicio, minutoInicio] = form.horaInicio.split(":").map(Number);
+    const [horaFim, minutoFim] = form.horaFim.split(":").map(Number);
+
+    if (
+      Number.isNaN(horaInicio) ||
+      Number.isNaN(minutoInicio) ||
+      Number.isNaN(horaFim) ||
+      Number.isNaN(minutoFim)
+    ) {
+      alert("Horário inválido.");
+      return;
+    }
+
+    const inicio = new Date();
+    inicio.setHours(horaInicio, minutoInicio, 0, 0);
+
+    const fim = new Date();
+    fim.setHours(horaFim, minutoFim, 0, 0);
+
+    if (inicio >= fim) {
+      alert("A hora inicial deve ser menor que a hora final.");
+      return;
+    }
+
+    const intervalo = Number(form.intervalo || 30);
+
+    if (!intervalo || intervalo <= 0) {
+      alert("Informe um intervalo válido.");
+      return;
+    }
+
+    const horariosGerados = [];
+    const atual = new Date(inicio);
+
+    while (atual < fim) {
+      const hora = String(atual.getHours()).padStart(2, "0");
+      const minuto = String(atual.getMinutes()).padStart(2, "0");
+      const horario = `${hora}:${minuto}`;
+
+      const dentroDaPausa =
+        form.pausaInicio &&
+        form.pausaFim &&
+        horario >= form.pausaInicio &&
+        horario < form.pausaFim;
+
+      if (!dentroDaPausa) {
+        horariosGerados.push(horario);
+      }
+
+      atual.setMinutes(atual.getMinutes() + intervalo);
+    }
+
+    setForm((prev) => ({
+      ...prev,
+      horarios: Array.from(new Set(horariosGerados)).sort(),
+    }));
+  }
+
+  function limparHorariosGerados() {
+    setForm((prev) => ({
+      ...prev,
+      horarios: [],
+    }));
   }
 
   async function salvarUsuario() {
@@ -160,6 +338,19 @@ export default function Administracao({
       return;
     }
 
+    const profissionalAgenda =
+      form.role === "medico" || form.role === "enfermagem" || form.role === "odonto";
+
+    if (profissionalAgenda && form.diasAtendimento.length === 0) {
+      alert("Selecione pelo menos um dia de atendimento.");
+      return;
+    }
+
+    if (profissionalAgenda && form.horarios.length === 0) {
+      alert("Adicione ou gere pelo menos um horário de atendimento.");
+      return;
+    }
+
     if (form.permissions.length === 0) {
       alert("Selecione pelo menos um módulo.");
       return;
@@ -173,9 +364,19 @@ export default function Administracao({
         role: form.role,
         crm: form.role === "medico" ? form.crm : "",
         coren: form.role === "enfermagem" ? form.coren : "",
-        especialidade: form.role === "medico" ? form.especialidade : "",
+        especialidade:
+          form.role === "medico" || form.role === "odonto"
+            ? form.especialidade
+            : "",
         ativo: form.ativo,
         permissions: form.permissions,
+        diasAtendimento: profissionalAgenda ? form.diasAtendimento : [],
+        horarios: profissionalAgenda ? form.horarios : [],
+        horaInicio: profissionalAgenda ? form.horaInicio : "",
+        horaFim: profissionalAgenda ? form.horaFim : "",
+        intervalo: profissionalAgenda ? Number(form.intervalo || 30) : 30,
+        pausaInicio: profissionalAgenda ? form.pausaInicio : "",
+        pausaFim: profissionalAgenda ? form.pausaFim : "",
       };
 
       if (editandoId) {
@@ -266,6 +467,9 @@ export default function Administracao({
   const inativos = users.filter((item) => item.ativo === false).length;
   const admins = users.filter((item) => item.role === "admin").length;
 
+  const exibirAgenda =
+    form.role === "medico" || form.role === "enfermagem" || form.role === "odonto";
+
   return (
     <div>
       <div className="page-header">
@@ -329,7 +533,8 @@ export default function Administracao({
                       {editandoId ? "Editar usuário" : "Criar usuário"}
                     </h3>
                     <p className="page-subtitle" style={{ marginBottom: 0 }}>
-                      Defina usuário de login, perfil, registro profissional e permissões
+                      Defina usuário de login, perfil, registro profissional,
+                      agenda e permissões
                     </p>
                   </div>
 
@@ -449,6 +654,21 @@ export default function Administracao({
                     </div>
                   )}
 
+                  {form.role === "odonto" && (
+                    <div>
+                      <label>Especialidade</label>
+                      <select
+                        className="select"
+                        name="especialidade"
+                        value={form.especialidade}
+                        onChange={handleChange}
+                      >
+                        <option value="">Selecione</option>
+                        <option value="Odontologia">Odontologia</option>
+                      </select>
+                    </div>
+                  )}
+
                   {form.role === "enfermagem" && (
                     <div>
                       <label>COREN da enfermagem</label>
@@ -472,6 +692,183 @@ export default function Administracao({
                       >
                         Enviar redefinição de senha
                       </button>
+                    </div>
+                  )}
+
+                  {exibirAgenda && (
+                    <div className="full-width">
+                      <label style={{ marginBottom: "12px" }}>
+                        Dias de atendimento
+                      </label>
+
+                      <div className="info-grid-4">
+                        {DIAS_ATENDIMENTO.map((dia) => (
+                          <label
+                            key={dia}
+                            className="muted-box"
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "10px",
+                              marginBottom: 0,
+                              cursor: "pointer",
+                              textTransform: "capitalize",
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={form.diasAtendimento.includes(dia)}
+                              onChange={() => toggleDiaAtendimento(dia)}
+                            />
+                            <span>{dia}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {exibirAgenda && (
+                    <div className="full-width">
+                      <label>Gerar horários automaticamente</label>
+
+                      <div className="form-grid-2" style={{ marginTop: "8px" }}>
+                        <div>
+                          <label>Hora início</label>
+                          <input
+                            className="input"
+                            type="time"
+                            name="horaInicio"
+                            value={form.horaInicio}
+                            onChange={handleChange}
+                          />
+                        </div>
+
+                        <div>
+                          <label>Hora fim</label>
+                          <input
+                            className="input"
+                            type="time"
+                            name="horaFim"
+                            value={form.horaFim}
+                            onChange={handleChange}
+                          />
+                        </div>
+
+                        <div>
+                          <label>Intervalo</label>
+                          <select
+                            className="select"
+                            name="intervalo"
+                            value={form.intervalo}
+                            onChange={handleChange}
+                          >
+                            <option value={10}>10 minutos</option>
+                            <option value={15}>15 minutos</option>
+                            <option value={20}>20 minutos</option>
+                            <option value={30}>30 minutos</option>
+                            <option value={40}>40 minutos</option>
+                            <option value={60}>60 minutos</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label>Pausa início</label>
+                          <input
+                            className="input"
+                            type="time"
+                            name="pausaInicio"
+                            value={form.pausaInicio}
+                            onChange={handleChange}
+                          />
+                        </div>
+
+                        <div>
+                          <label>Pausa fim</label>
+                          <input
+                            className="input"
+                            type="time"
+                            name="pausaFim"
+                            value={form.pausaFim}
+                            onChange={handleChange}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="toolbar" style={{ marginTop: "10px" }}>
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={gerarHorariosAutomaticos}
+                        >
+                          Gerar horários
+                        </button>
+
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={limparHorariosGerados}
+                        >
+                          Limpar horários
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {exibirAgenda && (
+                    <div className="full-width">
+                      <label>Horários de atendimento</label>
+
+                      <div className="toolbar" style={{ marginTop: "8px" }}>
+                        <input
+                          className="input"
+                          type="time"
+                          value={novoHorario}
+                          onChange={(e) => setNovoHorario(e.target.value)}
+                        />
+
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={adicionarHorario}
+                        >
+                          Adicionar horário
+                        </button>
+                      </div>
+
+                      <div className="muted-box" style={{ marginTop: "10px" }}>
+                        {form.horarios.length > 0 ? (
+                          form.horarios.map((horario) => (
+                            <span
+                              key={horario}
+                              className="badge"
+                              style={{
+                                marginRight: "8px",
+                                marginBottom: "8px",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "6px",
+                              }}
+                            >
+                              {horario}
+                              <button
+                                type="button"
+                                onClick={() => removerHorario(horario)}
+                                style={{
+                                  border: "none",
+                                  background: "transparent",
+                                  cursor: "pointer",
+                                  color: "inherit",
+                                  fontWeight: 700,
+                                }}
+                              >
+                                ×
+                              </button>
+                            </span>
+                          ))
+                        ) : (
+                          <span>Nenhum horário cadastrado.</span>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -554,7 +951,7 @@ export default function Administracao({
                   </div>
                 )}
 
-                {form.role === "medico" && (
+                {(form.role === "medico" || form.role === "odonto") && (
                   <div className="muted-box" style={{ marginBottom: "12px" }}>
                     <strong>Especialidade</strong>
                     <div>{form.especialidade || "—"}</div>
@@ -566,6 +963,20 @@ export default function Administracao({
                     <strong>COREN</strong>
                     <div>{form.coren || "—"}</div>
                   </div>
+                )}
+
+                {exibirAgenda && (
+                  <>
+                    <div className="muted-box" style={{ marginBottom: "12px" }}>
+                      <strong>Dias de atendimento</strong>
+                      <div>{form.diasAtendimento.length}</div>
+                    </div>
+
+                    <div className="muted-box" style={{ marginBottom: "12px" }}>
+                      <strong>Horários cadastrados</strong>
+                      <div>{form.horarios.length}</div>
+                    </div>
+                  </>
                 )}
 
                 <div className="muted-box" style={{ marginBottom: "12px" }}>
@@ -615,6 +1026,7 @@ export default function Administracao({
                     <th>Perfil</th>
                     <th>Registro</th>
                     <th>Status</th>
+                    <th>Agenda</th>
                     <th>Módulos</th>
                     <th>Ações</th>
                   </tr>
@@ -634,6 +1046,16 @@ export default function Administracao({
                             : "-"}
                       </td>
                       <td>{usuario.ativo === false ? "Inativo" : "Ativo"}</td>
+                      <td>
+                        {Array.isArray(usuario.diasAtendimento) &&
+                        usuario.diasAtendimento.length > 0
+                          ? `${usuario.diasAtendimento.length} dia(s) / ${
+                              Array.isArray(usuario.horarios)
+                                ? usuario.horarios.length
+                                : 0
+                            } horário(s)`
+                          : "-"}
+                      </td>
                       <td>{Array.isArray(usuario.permissions) ? usuario.permissions.length : 0}</td>
                       <td>
                         <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
@@ -671,7 +1093,7 @@ export default function Administracao({
 
                   {usuariosFiltrados.length === 0 && (
                     <tr>
-                      <td colSpan="8">Nenhum usuário encontrado.</td>
+                      <td colSpan="9">Nenhum usuário encontrado.</td>
                     </tr>
                   )}
                 </tbody>

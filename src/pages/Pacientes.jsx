@@ -1,10 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   addDoc,
   collection,
   deleteDoc,
   doc,
+  getDocs,
+  query,
   serverTimestamp,
+  where,
 } from "firebase/firestore";
 import {
   EmailAuthProvider,
@@ -13,6 +16,301 @@ import {
 
 import { auth, db } from "../services/firebase";
 import { useAuth } from "../context/AuthContext";
+
+function normalizarTexto(valor) {
+  return String(valor || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function normalizarHora(valor) {
+  if (!valor) return "";
+  return String(valor).slice(0, 5);
+}
+
+function obterDiaSemana(dataISO) {
+  if (!dataISO) return null;
+
+  const [ano, mes, dia] = dataISO.split("-").map(Number);
+  const data = new Date(ano, mes - 1, dia);
+
+  const nomes = [
+    {
+      numero: 0,
+      nome: "domingo",
+      variantes: ["domingo", "dom", "0"],
+    },
+    {
+      numero: 1,
+      nome: "segunda-feira",
+      variantes: ["segunda-feira", "segunda", "seg", "1"],
+    },
+    {
+      numero: 2,
+      nome: "terça-feira",
+      variantes: ["terça-feira", "terca-feira", "terça", "terca", "ter", "2"],
+    },
+    {
+      numero: 3,
+      nome: "quarta-feira",
+      variantes: ["quarta-feira", "quarta", "qua", "3"],
+    },
+    {
+      numero: 4,
+      nome: "quinta-feira",
+      variantes: ["quinta-feira", "quinta", "qui", "4"],
+    },
+    {
+      numero: 5,
+      nome: "sexta-feira",
+      variantes: ["sexta-feira", "sexta", "sex", "5"],
+    },
+    {
+      numero: 6,
+      nome: "sábado",
+      variantes: ["sábado", "sabado", "sab", "sáb", "6"],
+    },
+  ];
+
+  return nomes[data.getDay()];
+}
+
+function gerarHorariosPorIntervalo(inicio, fim, intervaloMinutos = 30) {
+  if (!inicio || !fim) return [];
+
+  const [horaInicio, minutoInicio] = String(inicio).split(":").map(Number);
+  const [horaFim, minutoFim] = String(fim).split(":").map(Number);
+
+  if (
+    Number.isNaN(horaInicio) ||
+    Number.isNaN(minutoInicio) ||
+    Number.isNaN(horaFim) ||
+    Number.isNaN(minutoFim)
+  ) {
+    return [];
+  }
+
+  const horarios = [];
+  const atual = new Date();
+  atual.setHours(horaInicio, minutoInicio, 0, 0);
+
+  const limite = new Date();
+  limite.setHours(horaFim, minutoFim, 0, 0);
+
+  while (atual <= limite) {
+    const hora = String(atual.getHours()).padStart(2, "0");
+    const minuto = String(atual.getMinutes()).padStart(2, "0");
+    horarios.push(`${hora}:${minuto}`);
+    atual.setMinutes(atual.getMinutes() + Number(intervaloMinutos || 30));
+  }
+
+  return horarios;
+}
+
+function obterNomeProfissional(profissional) {
+  return (
+    profissional.nome ||
+    profissional.name ||
+    profissional.medico ||
+    profissional.profissional ||
+    profissional.username ||
+    profissional.email ||
+    "Profissional sem nome"
+  );
+}
+
+function obterIdProfissional(profissional) {
+  return profissional.id || profissional.uid || profissional.medicoId || profissional.userId || "";
+}
+
+function profissionalEhAssistencial(profissional) {
+  const role = normalizarTexto(profissional.role);
+  const cargo = normalizarTexto(profissional.cargo);
+  const tipo = normalizarTexto(profissional.tipo);
+  const especialidade = normalizarTexto(profissional.especialidade);
+  const permissions = Array.isArray(profissional.permissions)
+    ? profissional.permissions.map(normalizarTexto)
+    : [];
+
+  return (
+    role === "medico" ||
+    role === "médico" ||
+    role === "enfermeiro" ||
+    role === "enfermagem" ||
+    role === "odontologo" ||
+    role === "odontólogo" ||
+    cargo.includes("medic") ||
+    cargo.includes("enferm") ||
+    cargo.includes("odonto") ||
+    tipo.includes("medic") ||
+    tipo.includes("enferm") ||
+    tipo.includes("odonto") ||
+    especialidade ||
+    profissional.crm ||
+    profissional.coren ||
+    profissional.cro ||
+    permissions.includes("medicos") ||
+    permissions.includes("enfermagem") ||
+    permissions.includes("odonto")
+  );
+}
+
+function possuiAgendaNoDia(profissional, diaSemana) {
+  if (!diaSemana) return false;
+
+  const variantes = diaSemana.variantes.map(normalizarTexto);
+
+  const diasAtendimento =
+    profissional.diasAtendimento ||
+    profissional.dias ||
+    profissional.diasAgenda ||
+    profissional.diasDisponiveis ||
+    profissional.diasDeAtendimento;
+
+  if (Array.isArray(diasAtendimento)) {
+    return diasAtendimento.some((dia) => variantes.includes(normalizarTexto(dia)));
+  }
+
+  if (typeof diasAtendimento === "string") {
+    const diasTexto = diasAtendimento
+      .split(/[;,|]/)
+      .map(normalizarTexto)
+      .filter(Boolean);
+
+    return diasTexto.some((dia) => variantes.includes(dia));
+  }
+
+  const agenda =
+    profissional.agenda ||
+    profissional.agendaSemanal ||
+    profissional.horariosPorDia ||
+    profissional.disponibilidade;
+
+  if (agenda && typeof agenda === "object") {
+    return Object.keys(agenda).some((chave) => variantes.includes(normalizarTexto(chave)));
+  }
+
+  return false;
+}
+
+function obterHorariosDoProfissional(profissional, diaSemana) {
+  if (!diaSemana) return [];
+
+  const variantes = diaSemana.variantes.map(normalizarTexto);
+
+  const agenda =
+    profissional.agenda ||
+    profissional.agendaSemanal ||
+    profissional.horariosPorDia ||
+    profissional.disponibilidade;
+
+  if (agenda && typeof agenda === "object") {
+    const chaveEncontrada = Object.keys(agenda).find((chave) =>
+      variantes.includes(normalizarTexto(chave))
+    );
+
+    const horariosDoDia = chaveEncontrada ? agenda[chaveEncontrada] : null;
+
+    if (Array.isArray(horariosDoDia)) {
+      return horariosDoDia.map(normalizarHora).filter(Boolean);
+    }
+
+    if (horariosDoDia && typeof horariosDoDia === "object") {
+      if (Array.isArray(horariosDoDia.horarios)) {
+        return horariosDoDia.horarios.map(normalizarHora).filter(Boolean);
+      }
+
+      if (horariosDoDia.inicio && horariosDoDia.fim) {
+        return gerarHorariosPorIntervalo(
+          horariosDoDia.inicio,
+          horariosDoDia.fim,
+          horariosDoDia.intervalo || profissional.intervaloAtendimento || 30
+        );
+      }
+    }
+  }
+
+  const horarios =
+    profissional.horarios ||
+    profissional.horariosAtendimento ||
+    profissional.horariosDisponiveis ||
+    profissional.horariosAgenda;
+
+  if (Array.isArray(horarios)) {
+    return horarios.map(normalizarHora).filter(Boolean);
+  }
+
+  if (typeof horarios === "string") {
+    return horarios
+      .split(/[;,|]/)
+      .map(normalizarHora)
+      .filter(Boolean);
+  }
+
+  if (profissional.horaInicio && profissional.horaFim) {
+    return gerarHorariosPorIntervalo(
+      profissional.horaInicio,
+      profissional.horaFim,
+      profissional.intervaloAtendimento || 30
+    );
+  }
+
+  if (profissional.inicioAtendimento && profissional.fimAtendimento) {
+    return gerarHorariosPorIntervalo(
+      profissional.inicioAtendimento,
+      profissional.fimAtendimento,
+      profissional.intervaloAtendimento || 30
+    );
+  }
+
+  return [];
+}
+
+function consultaPertenceAoProfissional(consulta, profissional) {
+  const idProfissional = normalizarTexto(obterIdProfissional(profissional));
+  const nomeProfissional = normalizarTexto(obterNomeProfissional(profissional));
+  const emailProfissional = normalizarTexto(profissional.email);
+
+  const valoresConsulta = [
+    consulta.medicoId,
+    consulta.profissionalId,
+    consulta.userId,
+    consulta.medico,
+    consulta.profissional,
+    consulta.nomeMedico,
+    consulta.profissionalNome,
+    consulta.medicoNome,
+    consulta.medicoEmail,
+    consulta.profissionalEmail,
+  ]
+    .filter(Boolean)
+    .map(normalizarTexto);
+
+  return valoresConsulta.some((valor) => {
+    return (
+      valor === idProfissional ||
+      valor === nomeProfissional ||
+      valor === emailProfissional ||
+      valor.includes(nomeProfissional) ||
+      nomeProfissional.includes(valor)
+    );
+  });
+}
+
+function consultaOcupaHorario(consulta) {
+  const status = normalizarTexto(consulta.status);
+
+  return ![
+    "finalizado",
+    "finalizada",
+    "cancelado",
+    "cancelada",
+    "faltou",
+    "ausente",
+  ].includes(status);
+}
 
 export default function Pacientes({
   pacientes = [],
@@ -29,6 +327,10 @@ export default function Pacientes({
 
   const [paginaBusca, setPaginaBusca] = useState(1);
   const itensPorPagina = 8;
+
+  const [profissionaisDisponiveis, setProfissionaisDisponiveis] = useState([]);
+  const [horariosDisponiveis, setHorariosDisponiveis] = useState([]);
+  const [carregandoProfissionais, setCarregandoProfissionais] = useState(false);
 
   const [form, setForm] = useState({
     nome: "",
@@ -52,6 +354,8 @@ export default function Pacientes({
     telefone: "",
     especialidade: "",
     medico: "",
+    medicoId: "",
+    medicoEmail: "",
     data: "",
     hora: "",
     observacoesRecepcao: "",
@@ -59,6 +363,110 @@ export default function Pacientes({
   });
 
   const isAdmin = userData?.role === "admin";
+
+  useEffect(() => {
+    carregarProfissionaisDisponiveis(agendamento.data);
+  }, [agendamento.data, consultas]);
+
+  async function carregarProfissionaisDisponiveis(dataSelecionada) {
+    if (!dataSelecionada) {
+      setProfissionaisDisponiveis([]);
+      setHorariosDisponiveis([]);
+      setAgendamento((prev) => ({
+        ...prev,
+        medico: "",
+        medicoId: "",
+        medicoEmail: "",
+        hora: "",
+      }));
+      return;
+    }
+
+    try {
+      setCarregandoProfissionais(true);
+
+      const diaSemana = obterDiaSemana(dataSelecionada);
+
+      const buscas = await Promise.allSettled([
+        getDocs(query(collection(db, "users"), where("ativo", "==", true))),
+        getDocs(query(collection(db, "medicos"), where("ativo", "==", true))),
+      ]);
+
+      const profissionais = [];
+
+      buscas.forEach((resultado) => {
+        if (resultado.status !== "fulfilled") return;
+
+        resultado.value.docs.forEach((documento) => {
+          const dados = { id: documento.id, ...documento.data() };
+
+          const jaExiste = profissionais.some(
+            (item) =>
+              obterIdProfissional(item) === obterIdProfissional(dados) ||
+              normalizarTexto(item.email) === normalizarTexto(dados.email)
+          );
+
+          if (!jaExiste) {
+            profissionais.push(dados);
+          }
+        });
+      });
+
+      const disponiveis = profissionais
+        .filter((profissional) => profissional.ativo === true)
+        .filter(profissionalEhAssistencial)
+        .filter((profissional) => possuiAgendaNoDia(profissional, diaSemana))
+        .map((profissional) => {
+          const horariosCadastrados = obterHorariosDoProfissional(profissional, diaSemana);
+
+          const horariosOcupados = consultas
+            .filter((consulta) => consulta.data === dataSelecionada)
+            .filter(consultaOcupaHorario)
+            .filter((consulta) => consultaPertenceAoProfissional(consulta, profissional))
+            .map((consulta) => normalizarHora(consulta.hora));
+
+          const horariosLivres = horariosCadastrados.filter(
+            (hora) => hora && !horariosOcupados.includes(hora)
+          );
+
+          return {
+            ...profissional,
+            nomeExibicao: obterNomeProfissional(profissional),
+            horariosLivres,
+            totalHorariosLivres: horariosLivres.length,
+          };
+        })
+        .filter((profissional) => profissional.totalHorariosLivres > 0)
+        .sort((a, b) => b.totalHorariosLivres - a.totalHorariosLivres);
+
+      setProfissionaisDisponiveis(disponiveis);
+
+      const profissionalAtual = disponiveis.find(
+        (item) =>
+          normalizarTexto(item.nomeExibicao) === normalizarTexto(agendamento.medico) ||
+          normalizarTexto(obterIdProfissional(item)) === normalizarTexto(agendamento.medicoId)
+      );
+
+      if (profissionalAtual) {
+        setHorariosDisponiveis(profissionalAtual.horariosLivres);
+      } else {
+        setHorariosDisponiveis([]);
+        setAgendamento((prev) => ({
+          ...prev,
+          medico: "",
+          medicoId: "",
+          medicoEmail: "",
+          hora: "",
+        }));
+      }
+    } catch (error) {
+      console.error("Erro ao carregar profissionais disponíveis:", error);
+      setProfissionaisDisponiveis([]);
+      setHorariosDisponiveis([]);
+    } finally {
+      setCarregandoProfissionais(false);
+    }
+  }
 
   function calcularIdade(dataNascimento) {
     if (!dataNascimento) return "";
@@ -86,6 +494,38 @@ export default function Pacientes({
 
   function handleAgendamentoChange(e) {
     const { name, value } = e.target;
+
+    if (name === "data") {
+      setAgendamento((prev) => ({
+        ...prev,
+        data: value,
+        medico: "",
+        medicoId: "",
+        medicoEmail: "",
+        hora: "",
+      }));
+      setHorariosDisponiveis([]);
+      return;
+    }
+
+    if (name === "medico") {
+      const profissional = profissionaisDisponiveis.find(
+        (item) => obterIdProfissional(item) === value
+      );
+
+      setAgendamento((prev) => ({
+        ...prev,
+        medico: profissional?.nomeExibicao || "",
+        medicoId: obterIdProfissional(profissional || {}),
+        medicoEmail: profissional?.email || "",
+        especialidade: profissional?.especialidade || prev.especialidade,
+        hora: "",
+      }));
+
+      setHorariosDisponiveis(profissional?.horariosLivres || []);
+      return;
+    }
+
     setAgendamento((prev) => ({
       ...prev,
       [name]: value,
@@ -117,11 +557,16 @@ export default function Pacientes({
       telefone: "",
       especialidade: "",
       medico: "",
+      medicoId: "",
+      medicoEmail: "",
       data: "",
       hora: "",
       observacoesRecepcao: "",
       tipoAtendimento: "Agendamento",
     });
+
+    setProfissionaisDisponiveis([]);
+    setHorariosDisponiveis([]);
   }
 
   function novoCadastro() {
@@ -179,14 +624,27 @@ export default function Pacientes({
       return;
     }
 
+    const horarioAindaDisponivel = horariosDisponiveis.includes(normalizarHora(agendamento.hora));
+
+    if (!horarioAindaDisponivel) {
+      alert("Este horário não está mais disponível para o profissional selecionado.");
+      return;
+    }
+
     try {
       setSalvandoConsulta(true);
       await onAdicionarConsulta({
         paciente: agendamento.nomePaciente,
+        nomePaciente: agendamento.nomePaciente,
         cpf: agendamento.cpf,
         telefone: agendamento.telefone,
         especialidade: agendamento.especialidade,
         medico: agendamento.medico,
+        profissional: agendamento.medico,
+        medicoId: agendamento.medicoId,
+        profissionalId: agendamento.medicoId,
+        medicoEmail: agendamento.medicoEmail,
+        profissionalEmail: agendamento.medicoEmail,
         data: agendamento.data,
         hora: agendamento.hora,
         observacoesRecepcao: agendamento.observacoesRecepcao,
@@ -376,6 +834,16 @@ export default function Pacientes({
     overflowY: "auto",
     borderRadius: "12px",
   };
+
+  const profissionalDesabilitado =
+    !agendamento.data ||
+    carregandoProfissionais ||
+    profissionaisDisponiveis.length === 0;
+
+  const horarioDesabilitado =
+    !agendamento.medico ||
+    carregandoProfissionais ||
+    horariosDisponiveis.length === 0;
 
   return (
     <div className="patients-page" style={{ height: "100%", overflow: "hidden" }}>
@@ -865,14 +1333,44 @@ export default function Pacientes({
                     </div>
 
                     <div>
-                      <label>Profissional</label>
+                      <label>Data</label>
                       <input
                         className="input"
-                        name="medico"
-                        value={agendamento.medico}
+                        type="date"
+                        name="data"
+                        value={agendamento.data}
                         onChange={handleAgendamentoChange}
-                        placeholder="Nome do profissional"
                       />
+                    </div>
+
+                    <div>
+                      <label>Profissional</label>
+                      <select
+                        className="select"
+                        name="medico"
+                        value={agendamento.medicoId}
+                        onChange={handleAgendamentoChange}
+                        disabled={profissionalDesabilitado}
+                      >
+                        <option value="">
+                          {!agendamento.data
+                            ? "Selecione uma data primeiro"
+                            : carregandoProfissionais
+                            ? "Carregando profissionais..."
+                            : profissionaisDisponiveis.length === 0
+                            ? "Nenhum profissional disponível para esta data"
+                            : "Selecione o profissional"}
+                        </option>
+
+                        {profissionaisDisponiveis.map((profissional) => (
+                          <option
+                            key={obterIdProfissional(profissional)}
+                            value={obterIdProfissional(profissional)}
+                          >
+                            {profissional.nomeExibicao} — {profissional.totalHorariosLivres} horário(s)
+                          </option>
+                        ))}
+                      </select>
                     </div>
 
                     <div>
@@ -887,25 +1385,28 @@ export default function Pacientes({
                     </div>
 
                     <div>
-                      <label>Data</label>
-                      <input
-                        className="input"
-                        type="date"
-                        name="data"
-                        value={agendamento.data}
-                        onChange={handleAgendamentoChange}
-                      />
-                    </div>
-
-                    <div>
                       <label>Hora</label>
-                      <input
-                        className="input"
-                        type="time"
+                      <select
+                        className="select"
                         name="hora"
                         value={agendamento.hora}
                         onChange={handleAgendamentoChange}
-                      />
+                        disabled={horarioDesabilitado}
+                      >
+                        <option value="">
+                          {!agendamento.medico
+                            ? "Selecione um profissional"
+                            : horariosDisponiveis.length === 0
+                            ? "Nenhum horário disponível"
+                            : "Selecione o horário"}
+                        </option>
+
+                        {horariosDisponiveis.map((hora) => (
+                          <option key={hora} value={hora}>
+                            {hora}
+                          </option>
+                        ))}
+                      </select>
                     </div>
 
                     <div className="patients-full-width">
@@ -924,7 +1425,7 @@ export default function Pacientes({
                     <button
                       onClick={registrarAtendimento}
                       className="primary-btn"
-                      disabled={salvandoConsulta}
+                      disabled={salvandoConsulta || carregandoProfissionais}
                     >
                       {salvandoConsulta ? "Enviando..." : "Enviar para o profissional"}
                     </button>

@@ -11,6 +11,45 @@ import {
 import { db } from "../services/firebase";
 import { useAuth } from "../context/AuthContext";
 
+function normalizarTexto(valor) {
+  return (valor || "")
+    .toString()
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function normalizarStatus(status) {
+  const texto = normalizarTexto(status);
+
+  if (texto === "finalizado" || texto === "finalizada") return "finalizado";
+  if (texto === "em atendimento" || texto === "em_atendimento") return "em_atendimento";
+  if (texto === "agendada" || texto === "agendado") return "agendado";
+
+  return texto || "agendado";
+}
+
+function normalizarStatusPagamento(status) {
+  const texto = normalizarTexto(status);
+
+  if (texto === "pago" || texto === "paga") return "pago";
+  if (texto === "pendente") return "pendente";
+  if (texto === "cancelado" || texto === "cancelada") return "cancelado";
+  if (texto === "cortesia") return "cortesia";
+
+  return texto;
+}
+
+function obterDataHoje() {
+  const hoje = new Date();
+  const ano = hoje.getFullYear();
+  const mes = String(hoje.getMonth() + 1).padStart(2, "0");
+  const dia = String(hoje.getDate()).padStart(2, "0");
+
+  return `${ano}-${mes}-${dia}`;
+}
+
 export default function Pagamentos({ pacientes = [], consultas = [] }) {
   const { userData, firebaseUser } = useAuth();
 
@@ -35,12 +74,12 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
     const q = query(collection(db, "pagamentos"), orderBy("criadoEm", "desc"));
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const lista = snapshot.docs.map((documento) => ({
-        id: documento.id,
-        ...documento.data(),
-      }));
-
-      setPagamentos(lista);
+      setPagamentos(
+        snapshot.docs.map((documento) => ({
+          id: documento.id,
+          ...documento.data(),
+        }))
+      );
     });
 
     return () => unsubscribe();
@@ -48,27 +87,72 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
 
   const atendimentosPagos = useMemo(() => {
     return pagamentos
-      .filter((item) => item.statusPagamento === "Pago")
+      .filter((item) => normalizarStatusPagamento(item.statusPagamento) === "pago")
       .map((item) => item.atendimentoId)
       .filter(Boolean);
   }, [pagamentos]);
 
   const atendimentosDoDia = useMemo(() => {
-    const hoje = new Date().toISOString().split("T")[0];
+    const hoje = obterDataHoje();
 
-    return consultas.filter((item) => {
-      const atendimentoHoje = item.data === hoje || item.chegouHoje;
-      const aindaNaoPago = !atendimentosPagos.includes(item.id);
+    return consultas
+      .filter((item) => {
+        const statusConsulta = normalizarStatus(item.status);
+        const atendimentoAtivo =
+          statusConsulta === "agendado" || statusConsulta === "em_atendimento";
+        const atendimentoHoje = item.data === hoje || item.chegouHoje;
+        const atendimentoImediato =
+          normalizarTexto(item.tipoAtendimento).includes("imediato") ||
+          normalizarTexto(item.tipoAtendimento).includes("pronto");
+        const temPaciente = item.paciente || item.nomePaciente || item.cpf;
+        const aindaNaoPago = !atendimentosPagos.includes(item.id);
 
-      return atendimentoHoje && aindaNaoPago;
-    });
+        return (
+          temPaciente &&
+          aindaNaoPago &&
+          statusConsulta !== "finalizado" &&
+          (atendimentoHoje || atendimentoAtivo || atendimentoImediato)
+        );
+      })
+      .sort(
+        (a, b) =>
+          (a.data || "").localeCompare(b.data || "") ||
+          (a.hora || "").localeCompare(b.hora || "") ||
+          (a.paciente || "").localeCompare(b.paciente || "")
+      );
   }, [consultas, atendimentosPagos]);
+
+  const pagamentosPagos = pagamentos.filter(
+    (item) => normalizarStatusPagamento(item.statusPagamento) === "pago"
+  );
+
+  const pagamentosPendentes = pagamentos.filter(
+    (item) => normalizarStatusPagamento(item.statusPagamento) === "pendente"
+  );
+
+  const totalRecebido = pagamentosPagos.reduce(
+    (total, item) => total + Number(item.valor || 0),
+    0
+  );
+
+  const pagamentosRecentes = pagamentos.slice(0, 8);
 
   function formatarMoeda(valor) {
     return Number(valor || 0).toLocaleString("pt-BR", {
       style: "currency",
       currency: "BRL",
     });
+  }
+
+  function badgePagamentoClasse(status) {
+    const statusNormalizado = normalizarStatusPagamento(status);
+
+    if (statusNormalizado === "pago") return "patients-badge patients-badge-blue";
+    if (statusNormalizado === "pendente") return "patients-badge patients-badge-purple";
+    if (statusNormalizado === "cancelado") return "patients-badge";
+    if (statusNormalizado === "cortesia") return "patients-badge patients-badge-green";
+
+    return "patients-badge";
   }
 
   function handlePagamentoChange(e) {
@@ -156,7 +240,7 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
     }
 
     if (
-      pagamento.statusPagamento === "Pago" &&
+      normalizarStatusPagamento(pagamento.statusPagamento) === "pago" &&
       atendimentosPagos.includes(pagamento.atendimentoId)
     ) {
       alert("Este atendimento já possui pagamento registrado como pago.");
@@ -204,8 +288,6 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
     }
   }
 
-  const pagamentosRecentes = pagamentos.slice(0, 8);
-
   return (
     <div className="patients-page" style={{ height: "100%", overflow: "hidden" }}>
       <div className="page-header">
@@ -215,21 +297,28 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
         </p>
       </div>
 
-      <div className="patients-hero">
+      <div
+        className="patients-hero"
+        style={{
+          background:
+            "linear-gradient(135deg, rgba(15,142,199,0.12), rgba(124,58,237,0.10))",
+          border: "1px solid rgba(15,142,199,0.16)",
+        }}
+      >
         <div>
           <div className="patients-hero-kicker">Checkout financeiro</div>
           <h2 className="patients-hero-title">
-            Registro de pagamentos de consultas, procedimentos e convênios
+            Controle de recebimentos por atendimento
           </h2>
           <p className="patients-hero-text">
-            Selecione o atendimento do dia, registre o pagamento e envie automaticamente
-            para o Financeiro.
+            Selecione o atendimento enviado pela recepção, registre forma de pagamento,
+            status e valor sem duplicidade.
           </p>
         </div>
 
         <div className="patients-hero-badges">
-          <span className="patients-chip">Atendimentos hoje: {atendimentosDoDia.length}</span>
-          <span className="patients-chip">Pagamentos: {pagamentos.length}</span>
+          <span className="patients-chip">Atendimentos: {atendimentosDoDia.length}</span>
+          <span className="patients-chip">Recebido: {formatarMoeda(totalRecebido)}</span>
         </div>
       </div>
 
@@ -242,29 +331,19 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
 
         <div className="stat-box patients-stat patients-stat-green">
           <div className="stat-label">Pagamentos pagos</div>
-          <div className="stat-value">
-            {pagamentos.filter((item) => item.statusPagamento === "Pago").length}
-          </div>
+          <div className="stat-value">{pagamentosPagos.length}</div>
           <div className="stat-info">Recebimentos confirmados</div>
         </div>
 
         <div className="stat-box patients-stat patients-stat-purple">
           <div className="stat-label">Pendentes</div>
-          <div className="stat-value">
-            {pagamentos.filter((item) => item.statusPagamento === "Pendente").length}
-          </div>
+          <div className="stat-value">{pagamentosPendentes.length}</div>
           <div className="stat-info">Aguardando pagamento</div>
         </div>
 
         <div className="stat-box patients-stat patients-stat-cyan">
           <div className="stat-label">Total recebido</div>
-          <div className="stat-value">
-            {formatarMoeda(
-              pagamentos
-                .filter((item) => item.statusPagamento === "Pago")
-                .reduce((total, item) => total + Number(item.valor || 0), 0)
-            )}
-          </div>
+          <div className="stat-value">{formatarMoeda(totalRecebido)}</div>
           <div className="stat-info">Pagamentos confirmados</div>
         </div>
       </div>
@@ -281,7 +360,7 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
           <div>
             <h3>Checkout do paciente</h3>
             <p className="patients-card-subtitle">
-              Registre pagamentos sem duplicidade por atendimento.
+              Atendimento, valor e forma de pagamento em um único fluxo.
             </p>
           </div>
 
@@ -310,10 +389,21 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
             }}
           >
             <div className="patients-section-card">
-              <h4 className="patients-section-title">Dados do pagamento</h4>
+              <div className="patients-card-header" style={{ marginBottom: "14px" }}>
+                <div>
+                  <h4 className="patients-section-title">Dados do pagamento</h4>
+                  <p className="patients-card-subtitle">
+                    Selecione o atendimento antes de lançar o recebimento.
+                  </p>
+                </div>
+
+                <span className={badgePagamentoClasse(pagamento.statusPagamento)}>
+                  {pagamento.statusPagamento}
+                </span>
+              </div>
 
               <div className="patients-form-grid">
-                <div>
+                <div className="patients-full-width">
                   <label>Atendimento do dia</label>
                   <select
                     className="select"
@@ -324,7 +414,8 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
                     {atendimentosDoDia.map((item) => (
                       <option key={item.id} value={item.id}>
                         {(item.paciente || item.nomePaciente || "Paciente")} -{" "}
-                        {item.data || "Hoje"} {item.hora || ""}
+                        {item.data || "Hoje"} {item.hora || ""} -{" "}
+                        {item.tipoAtendimento || item.especialidade || "Atendimento"}
                       </option>
                     ))}
                   </select>
@@ -458,7 +549,14 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
             </div>
 
             <div className="patients-section-card">
-              <h4 className="patients-section-title">Pagamentos recentes</h4>
+              <div className="patients-card-header" style={{ marginBottom: "12px" }}>
+                <div>
+                  <h4 className="patients-section-title">Pagamentos recentes</h4>
+                  <p className="patients-card-subtitle">
+                    Últimos recebimentos registrados no sistema.
+                  </p>
+                </div>
+              </div>
 
               <div
                 style={{
@@ -486,7 +584,11 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
                         <td>{item.tipoAtendimento || "—"}</td>
                         <td>{formatarMoeda(item.valor)}</td>
                         <td>{item.formaPagamento || "—"}</td>
-                        <td>{item.statusPagamento || "—"}</td>
+                        <td>
+                          <span className={badgePagamentoClasse(item.statusPagamento)}>
+                            {item.statusPagamento || "—"}
+                          </span>
+                        </td>
                         <td>{item.dataPagamento || "—"}</td>
                       </tr>
                     ))}
@@ -536,8 +638,37 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
               </div>
 
               <div className="muted-box" style={{ marginTop: "12px" }}>
-                Ao salvar, este registro será gravado na coleção pagamentos do
-                Firebase e consumido automaticamente pelo Financeiro.
+                Ao salvar, o pagamento entra na coleção <strong>pagamentos</strong> e
+                alimenta automaticamente a área Financeiro.
+              </div>
+            </div>
+
+            <div className="page-card patients-card" style={{ marginTop: "14px" }}>
+              <h4 className="patients-section-title">Fila para pagamento</h4>
+
+              <div style={{ display: "grid", gap: "10px", marginTop: "12px" }}>
+                {atendimentosDoDia.slice(0, 5).map((item) => (
+                  <button
+                    key={item.id}
+                    className="secondary-btn"
+                    style={{
+                      width: "100%",
+                      textAlign: "left",
+                      justifyContent: "flex-start",
+                      whiteSpace: "normal",
+                    }}
+                    onClick={() => selecionarAtendimentoPagamento(item.id)}
+                  >
+                    {(item.paciente || item.nomePaciente || "Paciente")} •{" "}
+                    {item.hora || "sem horário"}
+                  </button>
+                ))}
+
+                {atendimentosDoDia.length === 0 && (
+                  <div className="muted-box">
+                    Nenhum atendimento disponível para pagamento.
+                  </div>
+                )}
               </div>
             </div>
           </div>

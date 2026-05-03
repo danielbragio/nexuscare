@@ -295,6 +295,7 @@ export default function App() {
   const [view, setView] = useState("");
   const [sidebarMinimizada, setSidebarMinimizada] = useState(false);
   const [consultorioConfirmadoSessao, setConsultorioConfirmadoSessao] = useState(false);
+  const [consultaSelecionadaExterna, setConsultaSelecionadaExterna] = useState(null);
 
   const [menuAberto, setMenuAberto] = useState({
     principal: true,
@@ -304,6 +305,7 @@ export default function App() {
 
   const [pacientes, setPacientes] = useState([]);
   const [consultas, setConsultas] = useState([]);
+  const [pagamentos, setPagamentos] = useState([]);
   const [consultorios, setConsultorios] = useState([]);
   const [users, setUsers] = useState([]);
   const [dataLoading, setDataLoading] = useState(true);
@@ -319,12 +321,14 @@ export default function App() {
 
   useEffect(() => {
     setConsultorioConfirmadoSessao(false);
+    setConsultaSelecionadaExterna(null);
   }, [firebaseUser?.uid]);
 
   useEffect(() => {
     if (!firebaseUser) {
       setPacientes([]);
       setConsultas([]);
+      setPagamentos([]);
       setConsultorios([]);
       setUsers([]);
       setDataLoading(false);
@@ -340,6 +344,11 @@ export default function App() {
 
     const qConsultas = query(
       collection(db, "appointments"),
+      orderBy("createdAt", "desc")
+    );
+
+    const qPagamentos = query(
+      collection(db, "pagamentos"),
       orderBy("createdAt", "desc")
     );
 
@@ -362,6 +371,17 @@ export default function App() {
       setDataLoading(false);
     });
 
+    const unsubPagamentos = onSnapshot(
+      qPagamentos,
+      (snapshot) => {
+        setPagamentos(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
+      },
+      (error) => {
+        console.error("Erro ao carregar pagamentos:", error);
+        setPagamentos([]);
+      }
+    );
+
     const unsubConsultorios = onSnapshot(qConsultorios, (snapshot) => {
       setConsultorios(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
     });
@@ -373,6 +393,7 @@ export default function App() {
     return () => {
       unsubPacientes();
       unsubConsultas();
+      unsubPagamentos();
       unsubConsultorios();
       unsubUsers();
     };
@@ -422,6 +443,14 @@ export default function App() {
         permissions: novoUsuario.permissions,
         crm: novoUsuario.crm || "",
         coren: novoUsuario.coren || "",
+        especialidade: novoUsuario.especialidade || "",
+        diasAtendimento: novoUsuario.diasAtendimento || [],
+        horarios: novoUsuario.horarios || [],
+        horaInicio: novoUsuario.horaInicio || "",
+        horaFim: novoUsuario.horaFim || "",
+        intervalo: novoUsuario.intervalo || 30,
+        pausaInicio: novoUsuario.pausaInicio || "",
+        pausaFim: novoUsuario.pausaFim || "",
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -542,8 +571,9 @@ export default function App() {
       emAtendimento: consultas.filter((c) => c.status === "em_atendimento").length,
       altas: consultas.filter((c) => c.status === "finalizado").length,
       totalPacientes: pacientes.length,
+      pagamentos: pagamentos.length,
     };
-  }, [consultas, pacientes]);
+  }, [consultas, pacientes, pagamentos]);
 
   function getFirstAllowedView() {
     const orderedViews = [
@@ -585,21 +615,40 @@ export default function App() {
           <Pacientes
             pacientes={pacientes}
             consultas={consultas}
+            pagamentos={pagamentos}
+            users={users}
             onAdicionarPaciente={adicionarPaciente}
             onAdicionarConsulta={adicionarConsulta}
           />
         );
 
       case "pagamentos":
-        return <Pagamentos pacientes={pacientes} consultas={consultas} />;
+        return (
+          <Pagamentos
+            pacientes={pacientes}
+            consultas={consultas}
+            pagamentos={pagamentos}
+          />
+        );
 
       case "agendamentos":
-        return <Agendamentos consultas={consultas} />;
+        return (
+          <Agendamentos
+            consultas={consultas}
+            users={users}
+            onAbrirAtendimento={(consulta) => {
+              setConsultaSelecionadaExterna(consulta);
+              setView("medicos");
+            }}
+          />
+        );
 
       case "medicos":
         return (
           <Medicos
             consultas={consultas}
+            consultaSelecionadaExterna={consultaSelecionadaExterna}
+            limparConsultaExterna={() => setConsultaSelecionadaExterna(null)}
             consultorioAtual={consultorioAtual}
             onIniciarAtendimento={iniciarAtendimento}
             onSalvarProntuario={salvarProntuario}
@@ -617,7 +666,13 @@ export default function App() {
         return <Faturamento />;
 
       case "financeiro":
-        return <Financeiro />;
+        return (
+          <Financeiro
+            pagamentos={pagamentos}
+            consultas={consultas}
+            pacientes={pacientes}
+          />
+        );
 
       case "administracao":
         return (
@@ -639,7 +694,14 @@ export default function App() {
         return <Estoque />;
 
       case "relatorios":
-        return <Relatorios />;
+        return (
+          <Relatorios
+            consultas={consultas}
+            pagamentos={pagamentos}
+            pacientes={pacientes}
+            users={users}
+          />
+        );
 
       case "telemedicina":
         return <Telemedicina />;
@@ -648,9 +710,11 @@ export default function App() {
         return (
           <Dashboard
             consultas={consultas}
+            pagamentos={pagamentos}
             indicadores={indicadores}
             pacientes={pacientes}
             consultorios={consultorios}
+            users={users}
           />
         );
     }
@@ -684,6 +748,7 @@ export default function App() {
       }
 
       setConsultorioConfirmadoSessao(false);
+      setConsultaSelecionadaExterna(null);
       await logout();
     } catch (error) {
       console.error("Erro ao sair:", error);

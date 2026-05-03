@@ -1,10 +1,28 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 function normalizarTipo(tipo) {
   const texto = (tipo || "").toString().trim().toLowerCase();
 
   if (texto.includes("pronto")) return "Atendimento Imediato";
   return "Agendamento";
+}
+
+function normalizarStatus(status) {
+  const texto = (status || "").toString().trim().toLowerCase();
+
+  if (texto === "finalizado" || texto === "finalizada") return "finalizado";
+  if (texto === "em atendimento" || texto === "em_atendimento") return "em_atendimento";
+  if (texto === "agendada" || texto === "agendado") return "agendado";
+
+  return texto || "agendado";
+}
+
+function labelStatus(status) {
+  const statusNormalizado = normalizarStatus(status);
+
+  if (statusNormalizado === "finalizado") return "Finalizado";
+  if (statusNormalizado === "em_atendimento") return "Em atendimento";
+  return "Agendado";
 }
 
 function ordenarConsultas(lista) {
@@ -17,6 +35,8 @@ function ordenarConsultas(lista) {
 
 export default function Medicos({
   consultas = [],
+  consultaSelecionadaExterna,
+  limparConsultaExterna,
   onIniciarAtendimento,
   onSalvarProntuario,
   onFinalizarAtendimento,
@@ -41,9 +61,33 @@ export default function Medicos({
     atestado: "",
   });
 
+  useEffect(() => {
+    if (consultaSelecionadaExterna) {
+      abrirAtendimento(consultaSelecionadaExterna);
+
+      if (limparConsultaExterna) {
+        limparConsultaExterna();
+      }
+    }
+  }, [consultaSelecionadaExterna]);
+
+  useEffect(() => {
+    function handleAbrirAtendimento(event) {
+      if (event.detail) {
+        abrirAtendimento(event.detail);
+      }
+    }
+
+    window.addEventListener("abrir-atendimento", handleAbrirAtendimento);
+
+    return () => {
+      window.removeEventListener("abrir-atendimento", handleAbrirAtendimento);
+    };
+  }, []);
+
   const consultasAtivas = useMemo(() => {
     return ordenarConsultas(
-      consultas.filter((item) => item.status !== "Finalizado")
+      consultas.filter((item) => normalizarStatus(item.status) !== "finalizado")
     );
   }, [consultas]);
 
@@ -69,7 +113,7 @@ export default function Medicos({
     setConsultaSelecionada(consulta);
     setAbaAtendimento("dados");
 
-    if (consulta.status === "Agendada" && onIniciarAtendimento) {
+    if (normalizarStatus(consulta.status) === "agendado" && onIniciarAtendimento) {
       await onIniciarAtendimento(consulta.id);
     }
 
@@ -194,7 +238,7 @@ export default function Medicos({
               <td>{consulta.data || "—"}</td>
               <td>{consulta.hora || "—"}</td>
               <td>{normalizarTipo(consulta.tipoAtendimento)}</td>
-              <td>{consulta.status || "Agendada"}</td>
+              <td>{labelStatus(consulta.status)}</td>
               <td>
                 <button
                   className="primary-btn"
@@ -239,7 +283,7 @@ export default function Medicos({
 
           <div className="muted-box">
             <strong>Status</strong>
-            <div>{consultaSelecionada.status || "Agendada"}</div>
+            <div>{labelStatus(consultaSelecionada.status)}</div>
           </div>
 
           <div className="muted-box">
@@ -456,7 +500,7 @@ export default function Medicos({
             </div>
           </div>
 
-          <div className="badge">{consultaSelecionada.status || "Agendada"}</div>
+          <div className="badge">{labelStatus(consultaSelecionada.status)}</div>
         </div>
 
         <div className="page-card module-medico">
@@ -568,7 +612,11 @@ export default function Medicos({
           <div className="muted-box">
             Em atendimento:{" "}
             <strong>
-              {consultasAtivas.filter((c) => c.status === "Em atendimento").length}
+              {
+                consultasAtivas.filter(
+                  (c) => normalizarStatus(c.status) === "em_atendimento"
+                ).length
+              }
             </strong>
           </div>
         </div>

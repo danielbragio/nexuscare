@@ -1,12 +1,6 @@
 import { useMemo, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 
-function formatarDataBr(dataISO) {
-  if (!dataISO) return "Sem data";
-  const [ano, mes, dia] = dataISO.split("-");
-  return `${dia}/${mes}/${ano}`;
-}
-
 function normalizarTexto(valor) {
   return (valor || "")
     .toString()
@@ -16,12 +10,56 @@ function normalizarTexto(valor) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
+function obterDataISO(valor) {
+  if (!valor) return "";
+
+  if (typeof valor === "string") {
+    if (/^\d{4}-\d{2}-\d{2}/.test(valor)) {
+      return valor.slice(0, 10);
+    }
+
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(valor)) {
+      const [dia, mes, ano] = valor.split("/");
+      return `${ano}-${mes}-${dia}`;
+    }
+
+    return valor;
+  }
+
+  if (valor?.toDate) {
+    const data = valor.toDate();
+    const ano = data.getFullYear();
+    const mes = String(data.getMonth() + 1).padStart(2, "0");
+    const dia = String(data.getDate()).padStart(2, "0");
+    return `${ano}-${mes}-${dia}`;
+  }
+
+  return "";
+}
+
+function obterNomePaciente(consulta) {
+  return (
+    consulta.paciente ||
+    consulta.nomePaciente ||
+    consulta.nome ||
+    consulta.patientName ||
+    "Paciente"
+  );
+}
+
+function formatarDataBr(dataISO) {
+  if (!dataISO) return "Sem data";
+  const [ano, mes, dia] = dataISO.split("-");
+  return `${dia}/${mes}/${ano}`;
+}
+
 function normalizarStatus(status) {
   const texto = normalizarTexto(status);
 
   if (texto === "finalizado" || texto === "finalizada") return "finalizado";
   if (texto === "em atendimento" || texto === "em_atendimento") return "em_atendimento";
   if (texto === "agendada" || texto === "agendado") return "agendado";
+  if (texto === "aguardando" || texto === "aguardando atendimento") return "agendado";
 
   return texto || "agendado";
 }
@@ -70,7 +108,7 @@ function nomeDoMes(mesSelecionado) {
   });
 }
 
-export default function Agendamentos({ consultas = [] }) {
+export default function Agendamentos({ consultas = [], onAbrirAtendimento }) {
   const { userData, firebaseUser } = useAuth();
 
   const [mesSelecionado, setMesSelecionado] = useState(obterMesAtual());
@@ -96,6 +134,23 @@ export default function Agendamentos({ consultas = [] }) {
       .filter(Boolean)
       .map(normalizarTexto);
   }, [userData, firebaseUser]);
+
+  const consultasNormalizadas = useMemo(() => {
+    return consultas.map((consulta) => ({
+      ...consulta,
+      dataNormalizada: obterDataISO(consulta.data || consulta.dataAgendamento || consulta.createdAt),
+      pacienteNormalizado: obterNomePaciente(consulta),
+      medicoNormalizado:
+        consulta.medico ||
+        consulta.profissional ||
+        consulta.nomeMedico ||
+        consulta.profissionalNome ||
+        "—",
+      especialidadeNormalizada: consulta.especialidade || consulta.servico || "—",
+      telefoneNormalizado: consulta.telefone || consulta.celular || "—",
+      horaNormalizada: consulta.hora || consulta.horario || consulta.horaAgendamento || "—",
+    }));
+  }, [consultas]);
 
   function pertenceAoProfissionalLogado(consulta) {
     if (!isMedico) return true;
@@ -123,9 +178,19 @@ export default function Agendamentos({ consultas = [] }) {
     );
   }
 
+  function abrirAtendimentoPeloAgendamento(item, event) {
+    if (event) {
+      event.stopPropagation();
+    }
+
+    if (onAbrirAtendimento) {
+      onAbrirAtendimento(item);
+    }
+  }
+
   const consultasPermitidas = useMemo(() => {
-    return consultas.filter((consulta) => pertenceAoProfissionalLogado(consulta));
-  }, [consultas, identificadoresUsuario, isMedico]);
+    return consultasNormalizadas.filter((consulta) => pertenceAoProfissionalLogado(consulta));
+  }, [consultasNormalizadas, identificadoresUsuario, isMedico]);
 
   const consultasAtivas = useMemo(() => {
     return consultasPermitidas.filter(
@@ -148,8 +213,8 @@ export default function Agendamentos({ consultas = [] }) {
   const consultasOrdenadas = useMemo(() => {
     return [...consultasAtivas].sort(
       (a, b) =>
-        (a.data || "").localeCompare(b.data || "") ||
-        (a.hora || "").localeCompare(b.hora || "")
+        (a.dataNormalizada || "").localeCompare(b.dataNormalizada || "") ||
+        (a.horaNormalizada || "").localeCompare(b.horaNormalizada || "")
     );
   }, [consultasAtivas]);
 
@@ -159,7 +224,7 @@ export default function Agendamentos({ consultas = [] }) {
 
   const consultasDoMes = useMemo(() => {
     return consultasOrdenadas.filter((consulta) =>
-      String(consulta.data || "").startsWith(mesSelecionado)
+      String(consulta.dataNormalizada || "").startsWith(mesSelecionado)
     );
   }, [consultasOrdenadas, mesSelecionado]);
 
@@ -170,10 +235,10 @@ export default function Agendamentos({ consultas = [] }) {
       if (!termo) return true;
 
       return (
-        normalizarTexto(consulta.paciente).includes(termo) ||
-        normalizarTexto(consulta.medico).includes(termo) ||
-        normalizarTexto(consulta.especialidade).includes(termo) ||
-        normalizarTexto(consulta.telefone).includes(termo)
+        normalizarTexto(consulta.pacienteNormalizado).includes(termo) ||
+        normalizarTexto(consulta.medicoNormalizado).includes(termo) ||
+        normalizarTexto(consulta.especialidadeNormalizada).includes(termo) ||
+        normalizarTexto(consulta.telefoneNormalizado).includes(termo)
       );
     });
   }, [consultasDoMes, busca]);
@@ -182,17 +247,21 @@ export default function Agendamentos({ consultas = [] }) {
     if (!diaSelecionado) return [];
 
     return consultasFiltradasDoMes.filter(
-      (consulta) => consulta.data === diaSelecionado
+      (consulta) => consulta.dataNormalizada === diaSelecionado
     );
   }, [consultasFiltradasDoMes, diaSelecionado]);
 
   const agrupadasPorDia = useMemo(() => {
     return consultasFiltradasDoMes.reduce((acc, consulta) => {
-      if (!acc[consulta.data]) {
-        acc[consulta.data] = [];
+      const data = consulta.dataNormalizada;
+
+      if (!data) return acc;
+
+      if (!acc[data]) {
+        acc[data] = [];
       }
 
-      acc[consulta.data].push(consulta);
+      acc[data].push(consulta);
       return acc;
     }, {});
   }, [consultasFiltradasDoMes]);
@@ -407,6 +476,7 @@ export default function Agendamentos({ consultas = [] }) {
                     {consultasDia.slice(0, 4).map((item) => (
                       <div
                         key={item.id}
+                        onClick={(event) => abrirAtendimentoPeloAgendamento(item, event)}
                         style={{
                           background:
                             normalizarStatus(item.status) === "em_atendimento"
@@ -419,11 +489,12 @@ export default function Agendamentos({ consultas = [] }) {
                           fontSize: "11px",
                           lineHeight: "1.25",
                           overflow: "hidden",
+                          cursor: onAbrirAtendimento ? "pointer" : "default",
                         }}
-                        title={`${item.hora || "—"} - ${item.paciente || "—"}`}
+                        title={`${item.horaNormalizada || "—"} - ${item.pacienteNormalizado || "—"}`}
                       >
-                        <strong>{item.hora || "—"}</strong>{" "}
-                        {item.paciente || "Paciente"}
+                        <strong>{item.horaNormalizada || "—"}</strong>{" "}
+                        {item.pacienteNormalizado || "Paciente"}
                       </div>
                     ))}
 
@@ -462,11 +533,18 @@ export default function Agendamentos({ consultas = [] }) {
               <tbody>
                 {consultasDoDiaSelecionado.map((item) => (
                   <tr key={item.id}>
-                    <td>{item.paciente}</td>
-                    <td>{item.telefone}</td>
-                    <td>{item.especialidade}</td>
-                    <td>{item.medico}</td>
-                    <td>{item.hora}</td>
+                    <td
+                      onClick={(event) => abrirAtendimentoPeloAgendamento(item, event)}
+                      style={{
+                        cursor: onAbrirAtendimento ? "pointer" : "default",
+                      }}
+                    >
+                      {item.pacienteNormalizado}
+                    </td>
+                    <td>{item.telefoneNormalizado}</td>
+                    <td>{item.especialidadeNormalizada}</td>
+                    <td>{item.medicoNormalizado}</td>
+                    <td>{item.horaNormalizada}</td>
                     <td>{labelStatus(item.status)}</td>
                   </tr>
                 ))}
