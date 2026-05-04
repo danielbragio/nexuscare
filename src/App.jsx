@@ -1,5 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  LayoutDashboard,
+  Users,
+  CreditCard,
+  Calendar,
+  FileText,
+  Stethoscope,
+  Heart,
+  Smile,
+  Receipt,
+  DollarSign,
+  Package,
+  BarChart2,
+  BookOpen,
+  Settings,
+  Video,
+} from "lucide-react";
+import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
 } from "firebase/auth";
@@ -660,7 +677,7 @@ export default function App() {
         return <Enfermagem />;
 
       case "odonto":
-        return <Odonto />;
+        return <Odonto pacientes={pacientes} users={users} />;
 
       case "faturamento":
         return <Faturamento />;
@@ -720,8 +737,27 @@ export default function App() {
     }
   }
 
+  const MENU_ICONS = {
+    dashboard: LayoutDashboard,
+    pacientes: Users,
+    pagamentos: CreditCard,
+    agendamentos: Calendar,
+    prontuario: FileText,
+    medicos: Stethoscope,
+    enfermagem: Heart,
+    odonto: Smile,
+    faturamento: Receipt,
+    financeiro: DollarSign,
+    estoque: Package,
+    relatorios: BarChart2,
+    normas: BookOpen,
+    administracao: Settings,
+    telemedicina: Video,
+  };
+
   function menu(label, value) {
     if (!hasPermission(userData, value)) return null;
+    const Icon = MENU_ICONS[value];
 
     return (
       <button
@@ -729,7 +765,10 @@ export default function App() {
         onClick={() => setView(value)}
         title={label}
       >
-        {label}
+        <span className="sidebar-btn-icon">
+          {Icon && <Icon size={17} strokeWidth={2} />}
+        </span>
+        <span className="sidebar-btn-label">{label}</span>
       </button>
     );
   }
@@ -848,12 +887,38 @@ export default function App() {
 
       <div className="content-area">
         <div className="topbar">
-          <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <div className="topbar-title">
               {view === "pacientes"
                 ? "Recepção"
                 : view === "pagamentos"
                 ? "Pagamentos"
+                : view === "odonto"
+                ? "Odonto"
+                : view === "relatorios"
+                ? "Relatórios"
+                : view === "administracao"
+                ? "Administração"
+                : view === "prontuario"
+                ? "Prontuário"
+                : view === "financeiro"
+                ? "Financeiro"
+                : view === "agendamentos"
+                ? "Agendamentos"
+                : view === "medicos"
+                ? "Médicos"
+                : view === "faturamento"
+                ? "Faturamento"
+                : view === "telemedicina"
+                ? "Telemedicina"
+                : view === "normas"
+                ? "Normas"
+                : view === "estoque"
+                ? "Estoque"
+                : view === "enfermagem"
+                ? "Enfermagem"
+                : view === "dashboard"
+                ? "Dashboard"
                 : view.charAt(0).toUpperCase() + view.slice(1)}
             </div>
             <div className="topbar-subtitle">

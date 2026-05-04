@@ -3682,3 +3682,567 @@ label {
   }
 }
 
+/* ===== MÓDULO ODONTO ===== */
+
+.module-odonto {
+  border-top: 4px solid var(--accent-odonto);
+}
+
+.odonto-tab.active {
+  background: var(--accent-odonto) !important;
+  color: #fff !important;
+  border-color: var(--accent-odonto) !important;
+  box-shadow: 0 6px 18px rgba(15, 118, 110, 0.2) !important;
+}
+
+.odonto-primary {
+  background: var(--accent-odonto) !important;
+  box-shadow: 0 6px 16px rgba(15, 118, 110, 0.2) !important;
+}
+
+.odonto-primary:hover {
+  background: #0d6660 !important;
+}
+
+/* Formulário inline (painel expansível) */
+.odonto-form-panel {
+  background: #f0fdf9;
+  border: 1px solid #99f6e4;
+  border-radius: 14px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+/* Fila de atendimento */
+.odonto-fila-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.odonto-fila-titulo {
+  padding-bottom: 10px;
+  margin-bottom: 4px;
+  font-size: 15px;
+}
+
+.odonto-fila-aguardando {
+  color: #f59e0b;
+  border-bottom: 2px solid #f59e0b;
+}
+
+.odonto-fila-em-atendimento {
+  color: var(--accent-odonto);
+  border-bottom: 2px solid var(--accent-odonto);
+}
+
+.odonto-fila-finalizado {
+  color: #16a34a;
+  border-bottom: 2px solid #16a34a;
+}
+
+.odonto-fila-lista {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.odonto-fila-vazia {
+  color: #94a3b8;
+  font-size: 14px;
+  text-align: center;
+  padding: 24px 16px;
+}
+
+/* Card de paciente na fila */
+.odonto-card-paciente {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  border-left: 4px solid #0f766e;
+  background: #f8fafc;
+  transition: background 0.2s ease;
+}
+
+.odonto-card-paciente:hover {
+  background: #f0fdf9;
+}
+
+.odonto-card-tipo {
+  font-size: 13px;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+/* Anamnese — perguntas sim/não */
+.odonto-simnao {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.odonto-simnao-btn {
+  padding: 7px 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+  transition: 0.2s ease;
+}
+
+.odonto-simnao-btn:hover {
+  background: #f0fdf9;
+  border-color: var(--accent-odonto);
+}
+
+.odonto-simnao-btn.active {
+  background: var(--accent-odonto);
+  color: #fff;
+  border-color: var(--accent-odonto);
+}
+
+/* Chips de procedimentos */
+.odonto-proc-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.odonto-chip-btn {
+  font-size: 12px !important;
+  padding: 7px 11px !important;
+}
+
+/* Item de procedimento selecionado */
+.odonto-proc-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 12px;
+  background: #fafafa;
+}
+
+.odonto-proc-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* Totais */
+.odonto-totais {
+  background: #f0fdf9;
+  border: 1px solid #99f6e4;
+  border-radius: 14px;
+  padding: 20px;
+  margin-top: 20px;
+}
+
+.odonto-total-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #ccfbf1;
+  font-size: 14px;
+}
+
+.odonto-total-row:last-child {
+  border-bottom: none;
+}
+
+.odonto-total-final {
+  padding-top: 14px;
+  font-size: 17px;
+}
+
+/* Títulos de seção dentro do atendimento */
+.odonto-section-title {
+  color: var(--accent-odonto);
+  margin-bottom: 16px;
+  font-size: 16px;
+}
+
+.odonto-subsection-title {
+  color: #334155;
+  margin-top: 24px;
+  margin-bottom: 14px;
+  font-size: 15px;
+}
+
+/* Mensagem vazia */
+.odonto-empty-msg {
+  text-align: center;
+  color: #64748b;
+  padding: 24px;
+}
+
+@media (max-width: 1100px) {
+  .odonto-fila-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .odonto-fila-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ===== SIDEBAR COM ÍCONES ===== */
+
+.sidebar-btn {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  font-size: 13.5px !important;
+}
+
+.sidebar-btn-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  opacity: 0.85;
+}
+
+.sidebar-btn.active .sidebar-btn-icon {
+  opacity: 1;
+}
+
+.sidebar-btn-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Collapsed: mostra só ícone */
+.sidebar-collapsed .sidebar-btn {
+  justify-content: center !important;
+  padding: 0 !important;
+  width: 44px !important;
+  height: 44px !important;
+  font-size: 0 !important;
+}
+
+.sidebar-collapsed .sidebar-btn-label {
+  display: none !important;
+}
+
+.sidebar-collapsed .sidebar-btn-icon {
+  opacity: 1;
+  width: 20px;
+  height: 20px;
+}
+
+/* Remove o bullet hack do collapsed */
+.sidebar-collapsed .sidebar-btn::after {
+  display: none !important;
+}
+
+/* Menu section toggle */
+.menu-section-toggle {
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  padding: 14px 4px 6px;
+  text-align: left;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.menu-section-toggle:hover {
+  color: #94a3b8;
+}
+
+.menu-section-toggle span {
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+.menu-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 4px;
+}
+
+.sidebar-collapsed .menu-section-toggle {
+  display: none !important;
+}
+
+.sidebar-collapsed .menu-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+/* ===== TOPBAR MELHORADO ===== */
+
+.topbar-title {
+  font-size: 20px !important;
+  font-weight: 700 !important;
+  color: #0f172a !important;
+  letter-spacing: -0.02em !important;
+}
+
+/* ===== MÓDULO RELATÓRIOS ===== */
+
+.rel-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* Filtro de período */
+.rel-filtro-card {
+  padding: 14px 18px !important;
+}
+
+.rel-filtro-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.rel-filtro-group {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.rel-filtro-btn {
+  padding: 8px 16px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  color: #334155;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  transition: 0.2s ease;
+}
+
+.rel-filtro-btn:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+}
+
+.rel-filtro-btn.active {
+  background: #0f766e;
+  color: #fff;
+  border-color: #0f766e;
+  box-shadow: 0 4px 12px rgba(15, 118, 110, 0.2);
+}
+
+.rel-filtro-datas {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rel-filtro-datas .input {
+  max-width: 160px;
+  width: auto !important;
+}
+
+.rel-filtro-label {
+  font-size: 13px;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.rel-filtro-label strong {
+  color: #0f172a;
+}
+
+/* KPIs */
+.rel-kpis-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.rel-kpi {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 18px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.05);
+}
+
+.rel-kpi-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.rel-kpi-label {
+  font-size: 12px;
+  color: #64748b;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.rel-kpi-value {
+  font-size: 22px;
+  font-weight: 800;
+  color: #0f172a;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.rel-kpi-sub {
+  font-size: 11.5px;
+  color: #94a3b8;
+  margin-top: 4px;
+}
+
+/* Cards de relatório */
+.rel-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.rel-report-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border-top: 3px solid #e2e8f0 !important;
+}
+
+.rel-report-card:nth-child(1) { border-top-color: #0f766e !important; }
+.rel-report-card:nth-child(2) { border-top-color: #2563eb !important; }
+.rel-report-card:nth-child(3) { border-top-color: #16a34a !important; }
+
+.rel-report-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.rel-report-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.rel-report-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+  margin: 0 0 2px;
+}
+
+.rel-report-sub {
+  font-size: 12px;
+  color: #64748b;
+  margin: 0;
+}
+
+.rel-stat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 16px;
+  flex: 1;
+}
+
+.rel-stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 11px 14px;
+  font-size: 13px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.rel-stat-row:last-child {
+  border-bottom: none;
+}
+
+.rel-stat-row span {
+  color: #64748b;
+}
+
+.rel-stat-row strong {
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.rel-pdf-btn {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 7px !important;
+  width: 100% !important;
+  padding: 11px !important;
+  font-size: 13px !important;
+  border-radius: 10px !important;
+}
+
+@media (max-width: 1200px) {
+  .rel-kpis-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .rel-cards-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .rel-kpis-grid,
+  .rel-cards-grid {
+    grid-template-columns: 1fr;
+  }
+  .rel-filtro-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .rel-filtro-label {
+    margin-left: 0;
+  }
+}
+
