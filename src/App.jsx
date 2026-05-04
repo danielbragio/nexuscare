@@ -853,79 +853,98 @@ export default function App() {
   return (
     <div className={`app-shell ${sidebarMinimizada ? "sidebar-collapsed-mode" : ""}`}>
       <aside className={`sidebar ${sidebarMinimizada ? "sidebar-collapsed" : ""}`}>
-        <button
-          className="sidebar-toggle-btn"
-          onClick={() => setSidebarMinimizada((prev) => !prev)}
-          title={sidebarMinimizada ? "Expandir menu" : "Minimizar menu"}
-        >
-          {sidebarMinimizada ? "☰" : "‹"}
-        </button>
-
-        <h2 className="brand-title">NexusCare</h2>
-        <p className="brand-subtitle">Healthcare System</p>
-
-        <button
-          className={`menu-section-toggle ${menuAberto.principal ? "open" : ""}`}
-          onClick={() => toggleGrupo("principal")}
-        >
-          Principal <span>{menuAberto.principal ? "▾" : "▸"}</span>
-        </button>
-
-        {menuAberto.principal && (
-          <div className="menu-group">
-            {menu("Dashboard", "dashboard")}
-            {menu("Recepção", "pacientes")}
-            {menu("Pagamentos", "pagamentos")}
-            {menu("Agendamentos", "agendamentos")}
-            {menu("Prontuário", "prontuario")}
+        <div className="sidebar-top">
+          <div className="sidebar-brand">
+            <h2 className="brand-title">NexusCare</h2>
+            <p className="brand-subtitle">Healthcare System</p>
           </div>
-        )}
+          <button
+            className="sidebar-toggle-btn"
+            onClick={() => setSidebarMinimizada((prev) => !prev)}
+            title={sidebarMinimizada ? "Expandir menu" : "Minimizar menu"}
+          >
+            {sidebarMinimizada ? "☰" : "‹"}
+          </button>
+        </div>
 
-        <button
-          className={`menu-section-toggle ${menuAberto.assistencial ? "open" : ""}`}
-          onClick={() => toggleGrupo("assistencial")}
-        >
-          Assistencial <span>{menuAberto.assistencial ? "▾" : "▸"}</span>
-        </button>
+        <div className="sidebar-nav">
+          <button
+            className={`menu-section-toggle ${menuAberto.principal ? "open" : ""}`}
+            onClick={() => toggleGrupo("principal")}
+          >
+            Principal <span>{menuAberto.principal ? "▾" : "▸"}</span>
+          </button>
 
-        {menuAberto.assistencial && (
-          <div className="menu-group">
-            {menu("Médicos", "medicos")}
-            {menu("Enfermagem", "enfermagem")}
-            {menu("Odonto", "odonto")}
+          {menuAberto.principal && (
+            <div className="menu-group">
+              {menu("Dashboard", "dashboard")}
+              {menu("Recepção", "pacientes")}
+              {menu("Pagamentos", "pagamentos")}
+              {menu("Agendamentos", "agendamentos")}
+              {menu("Prontuário", "prontuario")}
+            </div>
+          )}
+
+          <button
+            className={`menu-section-toggle ${menuAberto.assistencial ? "open" : ""}`}
+            onClick={() => toggleGrupo("assistencial")}
+          >
+            Assistencial <span>{menuAberto.assistencial ? "▾" : "▸"}</span>
+          </button>
+
+          {menuAberto.assistencial && (
+            <div className="menu-group">
+              {menu("Médicos", "medicos")}
+              {menu("Enfermagem", "enfermagem")}
+              {menu("Odonto", "odonto")}
+            </div>
+          )}
+
+          <button
+            className={`menu-section-toggle ${menuAberto.gestao ? "open" : ""}`}
+            onClick={() => toggleGrupo("gestao")}
+          >
+            Gestão <span>{menuAberto.gestao ? "▾" : "▸"}</span>
+          </button>
+
+          {menuAberto.gestao && (
+            <div className="menu-group">
+              {menu("Faturamento", "faturamento")}
+              {menu("Financeiro", "financeiro")}
+              {menu("Estoque", "estoque")}
+              {menu("Relatórios", "relatorios")}
+              {menu("Normas", "normas")}
+              {menu("Administração", "administracao")}
+              {menu("Telemedicina", "telemedicina")}
+            </div>
+          )}
+        </div>
+
+        <div className="sidebar-footer">
+          <div className="sidebar-user-avatar">
+            {(userData?.nome || userData?.name || firebaseUser?.email || "U").charAt(0).toUpperCase()}
           </div>
-        )}
-
-        <button
-          className={`menu-section-toggle ${menuAberto.gestao ? "open" : ""}`}
-          onClick={() => toggleGrupo("gestao")}
-        >
-          Gestão <span>{menuAberto.gestao ? "▾" : "▸"}</span>
-        </button>
-
-        {menuAberto.gestao && (
-          <div className="menu-group">
-            {menu("Faturamento", "faturamento")}
-            {menu("Financeiro", "financeiro")}
-            {menu("Estoque", "estoque")}
-            {menu("Relatórios", "relatorios")}
-            {menu("Normas", "normas")}
-            {menu("Administração", "administracao")}
-            {menu("Telemedicina", "telemedicina")}
+          <div className="sidebar-user-info">
+            <span className="sidebar-user-name">
+              {userData?.nome || userData?.name || firebaseUser?.email}
+            </span>
+            <span className="sidebar-user-role">
+              {userData?.role || "Usuário"}
+            </span>
           </div>
-        )}
+        </div>
       </aside>
 
       <div className="content-area">
         <div className="topbar">
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <div className="topbar-left">
             <div className="topbar-title">
               {view === "pacientes"
                 ? "Recepção"
                 : view === "pagamentos"
                 ? "Pagamentos"
                 : view === "odonto"
-                ? "Odonto"
+                ? "Odontologia"
                 : view === "relatorios"
                 ? "Relatórios"
                 : view === "administracao"
@@ -954,14 +973,33 @@ export default function App() {
             </div>
             <div className="topbar-subtitle">
               {consultorioAtual
-                ? `${consultorioAtual.nome} • ${consultorioAtual.medicoNome}`
+                ? `${consultorioAtual.nome} · ${consultorioAtual.medicoNome}`
                 : "NexusCare Healthcare System"}
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-            <div className="topbar-badge">
-              {userData?.name || userData?.nome || firebaseUser?.email || "Usuário"}
+          <div className="topbar-right">
+            <div className="topbar-search">
+              <span className="topbar-search-icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <circle cx="11" cy="11" r="8"/>
+                  <path d="m21 21-4.35-4.35"/>
+                </svg>
+              </span>
+              <input
+                className="topbar-search-input"
+                type="text"
+                placeholder="Buscar no sistema..."
+              />
+            </div>
+
+            <div className="topbar-user">
+              <div className="topbar-user-avatar">
+                {(userData?.nome || userData?.name || firebaseUser?.email || "U").charAt(0).toUpperCase()}
+              </div>
+              <span className="topbar-badge">
+                {userData?.name || userData?.nome || firebaseUser?.email || "Usuário"}
+              </span>
             </div>
 
             <button className="secondary-btn" onClick={sairSistema}>
