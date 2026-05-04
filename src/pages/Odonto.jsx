@@ -79,6 +79,10 @@ const FORM_ANAMNESE_INICIAL = {
   usaAnticoagulante: "",
   reacaoProcedimento: "",
   temProblemaCardiaco: "",
+  evolucao: "",
+  diagnostico: "",
+  conduta: "",
+  prescricao: "",
 };
 
 const PERGUNTAS_RAPIDAS = [
@@ -91,7 +95,10 @@ const PERGUNTAS_RAPIDAS = [
   { campo: "temProblemaCardiaco", label: "Possui problema cardíaco?" },
 ];
 
-export default function Odonto({ pacientes = [], users = [] }) {
+export default function Odonto({ pacientes = [], users = [], userData = null, pagamentos = [], procedimentosOdonto = [] }) {
+  const isAdmin =
+    userData?.role === "admin" ||
+    (Array.isArray(userData?.permissions) && userData.permissions.includes("administracao"));
   const [abaAtual, setAbaAtual] = useState("agendamentos");
   const [agendamentos, setAgendamentos] = useState([]);
   const [atendimentos, setAtendimentos] = useState([]);
@@ -105,6 +112,8 @@ export default function Odonto({ pacientes = [], users = [] }) {
   const [procedimentosSelecionados, setProcedimentosSelecionados] = useState([]);
   const [descontoGeral, setDescontoGeral] = useState(0);
   const [obsAtendimento, setObsAtendimento] = useState("");
+  const [formaPagamentoOdonto, setFormaPagamentoOdonto] = useState("dinheiro");
+  const [statusPagamentoOdonto, setStatusPagamentoOdonto] = useState("pendente");
 
   // ── Formulário de agendamento ───────────────────────────────────────────────
   const [formAgendamentoAberto, setFormAgendamentoAberto] = useState(false);
@@ -242,25 +251,34 @@ export default function Odonto({ pacientes = [], users = [] }) {
 
   async function encaminharParaFila(ag) {
     try {
-      await addDoc(collection(db, "atendimentosOdonto"), {
+      const atRef = await addDoc(collection(db, "atendimentosOdonto"), {
         agendamentoId: ag.id,
         pacienteId: ag.pacienteId || "",
         pacienteNome: ag.pacienteNome,
         profissionalId: ag.profissionalId || "",
         profissionalNome: ag.profissionalNome || "",
         tipoAtendimento: ag.tipoAtendimento || "Consulta",
-        observacoesRecepcao: ag.observacoes || "",
+        observacoesRecepcao: ag.observacoes || ag.observacoesRecepcao || "",
         status: "aguardando",
+        statusPagamento: ag.pagamentoId ? "pendente" : "",
         anamnese: null,
+        procedimentosSolicitados: ag.procedimentosSolicitados || [],
         procedimentosRealizados: [],
-        total: 0,
+        total: ag.valorEstimado || 0,
         desconto: 0,
-        valorFinal: 0,
-        financeiroStatus: "pendente",
+        valorFinal: ag.valorEstimado || 0,
+        financeiroStatus: ag.pagamentoId ? "pendente" : "",
+        pagamentoId: ag.pagamentoId || "",
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
       await atualizarStatusAgendamento(ag.id, "aguardando");
+      if (ag.pagamentoId) {
+        await updateDoc(doc(db, "pagamentos", ag.pagamentoId), {
+          atendimentoOdontoId: atRef.id,
+          updatedAt: serverTimestamp(),
+        });
+      }
       setAbaAtual("fila");
     } catch (e) {
       alert("Erro: " + e.message);
@@ -313,9 +331,21 @@ export default function Odonto({ pacientes = [], users = [] }) {
 
   async function finalizarAtendimento() {
     if (!atendimentoAberto) return;
-    const total = subtotalAtendimento;
+    const totalProcRealizados = procedimentosSelecionados.reduce(
+      (acc, p) => acc + (Number(p.valorFinal) || 0), 0
+    );
+    const totalSolicitados = (atendimentoAberto.procedimentosSolicitados || []).reduce(
+      (acc, p) => acc + Number(p.valor || 0), 0
+    );
+    const total = totalProcRealizados > 0 ? totalProcRealizados : totalSolicitados;
     const desconto = Number(descontoGeral) || 0;
     const valorFinal = Math.max(0, total - desconto);
+    const dataHoje = getDataHoje();
+    const descricaoProcedimentos =
+      procedimentosSelecionados.map((p) => p.nome).join(", ") ||
+      (atendimentoAberto.procedimentosSolicitados || []).map((p) => p.nome).join(", ") ||
+      "Atendimento odontológico";
+
     try {
       await updateDoc(doc(db, "atendimentosOdonto", atendimentoAberto.id), {
         status: "finalizado",
@@ -324,26 +354,72 @@ export default function Odonto({ pacientes = [], users = [] }) {
         total,
         desconto,
         valorFinal,
+        formaPagamento: formaPagamentoOdonto,
+        statusPagamento: statusPagamentoOdonto,
         observacoesAtendimento: obsAtendimento,
         finalizadoEm: serverTimestamp(),
         updatedAt: serverTimestamp(),
-        // Estrutura preparada para integração futura com Financeiro
         financeiro: {
           pacienteId: atendimentoAberto.pacienteId || "",
           pacienteNome: atendimentoAberto.pacienteNome,
           atendimentoId: atendimentoAberto.id,
-          descricao: procedimentosSelecionados.map((p) => p.nome).join(", ") || "Atendimento odontológico",
+          descricao: descricaoProcedimentos,
           valor: total,
           desconto,
           valorFinal,
-          statusFinanceiro: "pendente",
-          formaPagamento: "",
+          statusFinanceiro: statusPagamentoOdonto,
+          formaPagamento: formaPagamentoOdonto,
           dataLancamento: new Date().toISOString(),
           responsavel: atendimentoAberto.profissionalNome || "",
         },
       });
+
+      // Atualizar agendamento vinculado
+      if (atendimentoAberto.agendamentoId) {
+        await updateDoc(doc(db, "agendamentosOdonto", atendimentoAberto.agendamentoId), {
+          status: "finalizado",
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      if (atendimentoAberto.pagamentoId) {
+        // Atualizar pagamento existente criado pela recepção
+        await updateDoc(doc(db, "pagamentos", atendimentoAberto.pagamentoId), {
+          valor: valorFinal,
+          status: statusPagamentoOdonto,
+          statusPagamento: statusPagamentoOdonto === "pago" ? "Pago" : statusPagamentoOdonto === "cortesia" ? "Cortesia" : "Pendente",
+          formaPagamento: formaPagamentoOdonto,
+          dataPagamento: dataHoje,
+          descricao: descricaoProcedimentos,
+          atendimentoOdontoId: atendimentoAberto.id,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        // Criar novo registro de pagamento (atendimento sem pagamento prévio)
+        await addDoc(collection(db, "pagamentos"), {
+          pacienteId: atendimentoAberto.pacienteId || "",
+          paciente: atendimentoAberto.pacienteNome,
+          nomePaciente: atendimentoAberto.pacienteNome,
+          descricao: descricaoProcedimentos,
+          servico: "Odontologia",
+          valor: valorFinal,
+          status: statusPagamentoOdonto,
+          statusPagamento: statusPagamentoOdonto === "pago" ? "Pago" : statusPagamentoOdonto === "cortesia" ? "Cortesia" : "Pendente",
+          formaPagamento: formaPagamentoOdonto,
+          tipo: "odonto",
+          origem: "odonto",
+          atendimentoOdontoId: atendimentoAberto.id,
+          profissional: atendimentoAberto.profissionalNome || "",
+          data: dataHoje,
+          dataPagamento: dataHoje,
+          createdAt: serverTimestamp(),
+        });
+      }
+
       setAtendimentoAberto(null);
-      alert("Atendimento finalizado com sucesso.");
+      setFormaPagamentoOdonto("dinheiro");
+      setStatusPagamentoOdonto("pendente");
+      alert("Atendimento finalizado. Financeiro e Pagamentos atualizados.");
     } catch (e) {
       alert("Erro ao finalizar: " + e.message);
     }
@@ -489,6 +565,7 @@ export default function Odonto({ pacientes = [], users = [] }) {
             {[
               { id: "dados", label: "Dados" },
               { id: "anamnese", label: "Anamnese" },
+              { id: "evolucao", label: "Evolução Clínica" },
               { id: "procedimentos", label: "Procedimentos" },
               { id: "resumo", label: "Resumo" },
             ].map((tab) => (
@@ -506,22 +583,68 @@ export default function Odonto({ pacientes = [], users = [] }) {
 
             {/* ── ABA DADOS ── */}
             {abaAtendimento === "dados" && (
-              <div className="med-panel-grid">
-                {[
-                  { label: "Paciente", valor: atendimentoAberto.pacienteNome },
-                  { label: "Profissional", valor: atendimentoAberto.profissionalNome || "—" },
-                  { label: "Tipo de atendimento", valor: atendimentoAberto.tipoAtendimento || "—" },
-                  { label: "Status", valor: labelStatus(atendimentoAberto.status) },
-                ].map((item) => (
-                  <div key={item.label} className="muted-box">
-                    <strong>{item.label}</strong>
-                    <div>{item.valor}</div>
+              <div>
+                <div className="med-panel-grid">
+                  {[
+                    { label: "Paciente", valor: atendimentoAberto.pacienteNome },
+                    { label: "Profissional", valor: atendimentoAberto.profissionalNome || "—" },
+                    { label: "Tipo de atendimento", valor: atendimentoAberto.tipoAtendimento || "—" },
+                    { label: "Status", valor: labelStatus(atendimentoAberto.status) },
+                  ].map((item) => (
+                    <div key={item.label} className="muted-box">
+                      <strong>{item.label}</strong>
+                      <div>{item.valor}</div>
+                    </div>
+                  ))}
+                  {atendimentoAberto.pagamentoId && (
+                    <div className="muted-box" style={{ borderLeft: "3px solid #f59e0b" }}>
+                      <strong>Status do pagamento</strong>
+                      <div style={{ color: atendimentoAberto.statusPagamento === "pago" ? "#16a34a" : "#f59e0b", fontWeight: 700 }}>
+                        {atendimentoAberto.statusPagamento === "pago" ? "✓ Pago" :
+                         atendimentoAberto.statusPagamento === "cortesia" ? "🎁 Cortesia" : "⏳ Pendente"}
+                      </div>
+                    </div>
+                  )}
+                  <div className="muted-box med-full">
+                    <strong>Observações da recepção</strong>
+                    <div>{atendimentoAberto.observacoesRecepcao || "Sem observações."}</div>
                   </div>
-                ))}
-                <div className="muted-box med-full">
-                  <strong>Observações da recepção</strong>
-                  <div>{atendimentoAberto.observacoesRecepcao || "Sem observações."}</div>
                 </div>
+
+                {(atendimentoAberto.procedimentosSolicitados || []).length > 0 && (
+                  <div className="muted-box" style={{ marginTop: "16px", borderLeft: "3px solid #0f766e" }}>
+                    <strong style={{ display: "block", marginBottom: "10px", color: "#0f766e" }}>
+                      🦷 Procedimentos solicitados pela Recepção
+                    </strong>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "10px" }}>
+                      {(atendimentoAberto.procedimentosSolicitados || []).map((p, i) => (
+                        <span
+                          key={i}
+                          style={{
+                            background: "#f0fdf9",
+                            border: "1px solid #99f6e4",
+                            borderRadius: "8px",
+                            padding: "4px 10px",
+                            fontSize: "13px",
+                            color: "#0f766e",
+                            fontWeight: 600,
+                          }}
+                        >
+                          {p.nome}
+                          {p.valor ? ` — ${formatarValor(p.valor)}` : ""}
+                        </span>
+                      ))}
+                    </div>
+                    <div style={{ fontWeight: 700, color: "#0f766e" }}>
+                      Total estimado:{" "}
+                      {formatarValor(
+                        (atendimentoAberto.procedimentosSolicitados || []).reduce(
+                          (acc, p) => acc + Number(p.valor || 0), 0
+                        )
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -690,13 +813,103 @@ export default function Odonto({ pacientes = [], users = [] }) {
               </div>
             )}
 
+            {/* ── ABA EVOLUÇÃO CLÍNICA ── */}
+            {abaAtendimento === "evolucao" && (
+              <div>
+                <h3 className="odonto-section-title">Evolução Clínica</h3>
+                <div className="form-grid-2">
+                  <div className="full-width">
+                    <label>Evolução do atendimento</label>
+                    <textarea
+                      className="textarea"
+                      rows={4}
+                      value={formAnamnese.evolucao}
+                      onChange={(e) => setFormAnamnese((p) => ({ ...p, evolucao: e.target.value }))}
+                      placeholder="Descreva a evolução clínica do paciente nesta consulta"
+                    />
+                  </div>
+                  <div className="full-width">
+                    <label>Diagnóstico odontológico</label>
+                    <textarea
+                      className="textarea"
+                      rows={3}
+                      value={formAnamnese.diagnostico}
+                      onChange={(e) => setFormAnamnese((p) => ({ ...p, diagnostico: e.target.value }))}
+                      placeholder="Diagnóstico clínico e/ou radiográfico"
+                    />
+                  </div>
+                  <div className="full-width">
+                    <label>Conduta / Plano de tratamento</label>
+                    <textarea
+                      className="textarea"
+                      rows={3}
+                      value={formAnamnese.conduta}
+                      onChange={(e) => setFormAnamnese((p) => ({ ...p, conduta: e.target.value }))}
+                      placeholder="Descreva a conduta adotada e plano de tratamento"
+                    />
+                  </div>
+                  <div className="full-width">
+                    <label>Prescrições / Orientações ao paciente</label>
+                    <textarea
+                      className="textarea"
+                      rows={3}
+                      value={formAnamnese.prescricao}
+                      onChange={(e) => setFormAnamnese((p) => ({ ...p, prescricao: e.target.value }))}
+                      placeholder="Medicamentos prescritos, cuidados pós-procedimento, retorno..."
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* ── ABA PROCEDIMENTOS ── */}
             {abaAtendimento === "procedimentos" && (
               <div>
                 <h3 className="odonto-section-title">Procedimentos Realizados</h3>
+
+                {(atendimentoAberto.procedimentosSolicitados || []).length > 0 && (
+                  <div style={{ background: "#f0fdf9", border: "1px solid #99f6e4", borderRadius: "10px", padding: "12px 14px", marginBottom: "14px" }}>
+                    <div style={{ fontWeight: 700, color: "#0f766e", marginBottom: "8px", fontSize: "13px" }}>
+                      🦷 Solicitados pela Recepção — adicione-os ao atendimento se foram realizados:
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                      {(atendimentoAberto.procedimentosSolicitados || []).map((p, i) => {
+                        const jaSel = procedimentosSelecionados.some((s) => s.nome === p.nome);
+                        return (
+                          <button
+                            key={i}
+                            className="secondary-btn odonto-chip-btn"
+                            style={{ background: jaSel ? "#0f766e" : undefined, color: jaSel ? "#fff" : undefined, borderColor: jaSel ? "#0f766e" : undefined }}
+                            onClick={() => {
+                              if (!jaSel) {
+                                setProcedimentosSelecionados((prev) => [
+                                  ...prev,
+                                  {
+                                    procedimentoId: `sol-${i}`,
+                                    nome: p.nome,
+                                    categoria: p.categoria || "",
+                                    valor: Number(p.valor) || 0,
+                                    desconto: 0,
+                                    valorFinal: Number(p.valor) || 0,
+                                    observacoes: "",
+                                  },
+                                ]);
+                              }
+                            }}
+                            disabled={jaSel}
+                          >
+                            {jaSel ? "✓ " : "+ "}{p.nome}
+                            {p.valor ? ` (${formatarValor(p.valor)})` : ""}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 <div className="muted-box" style={{ marginBottom: "16px" }}>
                   <strong style={{ display: "block", marginBottom: "10px" }}>
-                    Clique para adicionar um procedimento
+                    Adicionar outros procedimentos
                   </strong>
                   <div className="odonto-proc-chips">
                     {procedimentos
@@ -867,11 +1080,34 @@ export default function Odonto({ pacientes = [], users = [] }) {
                       {formatarValor(Math.max(0, subtotalAtendimento - Number(descontoGeral)))}
                     </strong>
                   </div>
-                  <div
-                    className="muted-box"
-                    style={{ marginTop: "12px", fontSize: "13px", color: "#64748b" }}
-                  >
-                    Status financeiro: <strong>Pendente</strong> — integração com Financeiro preparada para implementação futura.
+                  <div className="form-grid-2" style={{ marginTop: "16px" }}>
+                    <div>
+                      <label>Forma de pagamento</label>
+                      <select
+                        className="select"
+                        value={formaPagamentoOdonto}
+                        onChange={(e) => setFormaPagamentoOdonto(e.target.value)}
+                      >
+                        <option value="dinheiro">Dinheiro</option>
+                        <option value="cartao_credito">Cartão de Crédito</option>
+                        <option value="cartao_debito">Cartão de Débito</option>
+                        <option value="pix">PIX</option>
+                        <option value="convenio">Convênio</option>
+                        <option value="cheque">Cheque</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label>Status do pagamento</label>
+                      <select
+                        className="select"
+                        value={statusPagamentoOdonto}
+                        onChange={(e) => setStatusPagamentoOdonto(e.target.value)}
+                      >
+                        <option value="pendente">Pendente</option>
+                        <option value="pago">Pago</option>
+                        <option value="cortesia">Cortesia</option>
+                      </select>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1099,9 +1335,10 @@ export default function Odonto({ pacientes = [], users = [] }) {
                 <th>Hora</th>
                 <th>Paciente</th>
                 <th>Profissional</th>
-                <th>Tipo</th>
+                <th>Procedimentos</th>
                 <th>Data</th>
                 <th>Status</th>
+                <th>Pagamento</th>
                 <th>Ações</th>
               </tr>
             </thead>
@@ -1111,7 +1348,20 @@ export default function Odonto({ pacientes = [], users = [] }) {
                   <td>{ag.hora || "—"}</td>
                   <td>{ag.pacienteNome || "—"}</td>
                   <td>{ag.profissionalNome || "—"}</td>
-                  <td>{ag.tipoAtendimento || "—"}</td>
+                  <td style={{ maxWidth: "180px" }}>
+                    {(ag.procedimentosSolicitados || []).length > 0 ? (
+                      <div style={{ fontSize: "12px" }}>
+                        {(ag.procedimentosSolicitados || []).map((p) => p.nome).join(", ")}
+                        {ag.valorEstimado ? (
+                          <div style={{ fontWeight: 700, color: "#0f766e" }}>
+                            {formatarValor(ag.valorEstimado)}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <span style={{ color: "#94a3b8" }}>—</span>
+                    )}
+                  </td>
                   <td>{ag.data || "—"}</td>
                   <td>
                     <span
@@ -1125,8 +1375,17 @@ export default function Odonto({ pacientes = [], users = [] }) {
                     </span>
                   </td>
                   <td>
+                    {ag.pagamentoId ? (
+                      <span style={{ fontSize: "12px", background: "#fffbeb", color: "#d97706", border: "1px solid #fde68a", borderRadius: "6px", padding: "2px 7px" }}>
+                        ⏳ Pendente
+                      </span>
+                    ) : (
+                      <span style={{ color: "#94a3b8", fontSize: "12px" }}>—</span>
+                    )}
+                  </td>
+                  <td>
                     <div style={{ display: "flex", gap: "6px" }}>
-                      {ag.status === "agendado" && (
+                      {(ag.status === "agendado" || ag.status === "aguardando_pagamento") && (
                         <button
                           className="primary-btn odonto-primary"
                           style={{ padding: "5px 10px", fontSize: "12px" }}
@@ -1175,13 +1434,23 @@ export default function Odonto({ pacientes = [], users = [] }) {
                   className="odonto-card-paciente"
                   style={{ borderLeftColor: "#f59e0b" }}
                 >
-                  <div>
+                  <div style={{ flex: 1 }}>
                     <strong>{at.pacienteNome}</strong>
                     <div className="odonto-card-tipo">{at.tipoAtendimento}</div>
+                    {(at.procedimentosSolicitados || []).length > 0 && (
+                      <div style={{ fontSize: "11px", color: "#0f766e", marginTop: "2px" }}>
+                        🦷 {(at.procedimentosSolicitados || []).map((p) => p.nome).join(", ")}
+                      </div>
+                    )}
+                    {at.pagamentoId && (
+                      <span style={{ fontSize: "11px", background: at.statusPagamento === "pago" ? "#f0fdf4" : "#fffbeb", color: at.statusPagamento === "pago" ? "#16a34a" : "#d97706", border: `1px solid ${at.statusPagamento === "pago" ? "#86efac" : "#fde68a"}`, borderRadius: "6px", padding: "1px 6px", display: "inline-block", marginTop: "3px" }}>
+                        {at.statusPagamento === "pago" ? "✓ Pago" : "⏳ Pagamento pendente"}
+                      </span>
+                    )}
                   </div>
                   <button
                     className="primary-btn odonto-primary"
-                    style={{ padding: "7px 12px", fontSize: "12px" }}
+                    style={{ padding: "7px 12px", fontSize: "12px", flexShrink: 0 }}
                     onClick={() => abrirAtendimento(at)}
                   >
                     Atender
@@ -1268,9 +1537,15 @@ export default function Odonto({ pacientes = [], users = [] }) {
         <div className="page-card module-odonto">
           <div className="card-title-row">
             <h3>Procedimentos Odontológicos</h3>
-            <button className="primary-btn odonto-primary" onClick={abrirCriarProc}>
-              + Novo Procedimento
-            </button>
+            {isAdmin ? (
+              <button className="primary-btn odonto-primary" onClick={abrirCriarProc}>
+                + Novo Procedimento
+              </button>
+            ) : (
+              <span style={{ fontSize: "12px", color: "#64748b", background: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "8px", padding: "4px 10px" }}>
+                🔒 Somente administradores podem cadastrar procedimentos
+              </span>
+            )}
           </div>
 
           {/* Formulário inline de procedimento */}
@@ -1385,34 +1660,33 @@ export default function Odonto({ pacientes = [], users = [] }) {
                     </span>
                   </td>
                   <td>
-                    <div style={{ display: "flex", gap: "6px" }}>
-                      <button
-                        className="secondary-btn"
-                        style={{ padding: "5px 10px", fontSize: "12px" }}
-                        onClick={() => abrirEditarProc(proc)}
-                      >
-                        Editar
-                      </button>
-                      <button
-                        className="secondary-btn"
-                        style={{ padding: "5px 10px", fontSize: "12px" }}
-                        onClick={() => toggleStatusProc(proc)}
-                      >
-                        {proc.status === "ativo" ? "Inativar" : "Ativar"}
-                      </button>
-                      <button
-                        className="secondary-btn"
-                        style={{
-                          padding: "5px 10px",
-                          fontSize: "12px",
-                          color: "#dc2626",
-                          borderColor: "#fca5a5",
-                        }}
-                        onClick={() => excluirProc(proc)}
-                      >
-                        Excluir
-                      </button>
-                    </div>
+                    {isAdmin ? (
+                      <div style={{ display: "flex", gap: "6px" }}>
+                        <button
+                          className="secondary-btn"
+                          style={{ padding: "5px 10px", fontSize: "12px" }}
+                          onClick={() => abrirEditarProc(proc)}
+                        >
+                          Editar
+                        </button>
+                        <button
+                          className="secondary-btn"
+                          style={{ padding: "5px 10px", fontSize: "12px" }}
+                          onClick={() => toggleStatusProc(proc)}
+                        >
+                          {proc.status === "ativo" ? "Inativar" : "Ativar"}
+                        </button>
+                        <button
+                          className="secondary-btn"
+                          style={{ padding: "5px 10px", fontSize: "12px", color: "#dc2626", borderColor: "#fca5a5" }}
+                          onClick={() => excluirProc(proc)}
+                        >
+                          Excluir
+                        </button>
+                      </div>
+                    ) : (
+                      <span style={{ fontSize: "12px", color: "#94a3b8" }}>🔒 Somente admin</span>
+                    )}
                   </td>
                 </tr>
               ))}

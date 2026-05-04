@@ -553,53 +553,73 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
                 <div>
                   <h4 className="patients-section-title">Pagamentos recentes</h4>
                   <p className="patients-card-subtitle">
-                    Últimos recebimentos registrados no sistema.
+                    Últimos recebimentos de todos os módulos.
                   </p>
                 </div>
+                <span className="patients-chip">{pagamentos.length} registros</span>
               </div>
 
-              <div
-                style={{
-                  maxHeight: "280px",
-                  overflowY: "auto",
-                  borderRadius: "12px",
-                }}
-              >
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>Paciente</th>
-                      <th>Serviço</th>
-                      <th>Valor</th>
-                      <th>Forma</th>
-                      <th>Status</th>
-                      <th>Data</th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    {pagamentosRecentes.map((item) => (
-                      <tr key={item.id}>
-                        <td>{item.paciente || "—"}</td>
-                        <td>{item.tipoAtendimento || "—"}</td>
-                        <td>{formatarMoeda(item.valor)}</td>
-                        <td>{item.formaPagamento || "—"}</td>
-                        <td>
-                          <span className={badgePagamentoClasse(item.statusPagamento)}>
-                            {item.statusPagamento || "—"}
+              <div style={{ display: "grid", gap: "10px", maxHeight: "320px", overflowY: "auto", paddingRight: "4px" }}>
+                {pagamentosRecentes.map((item) => {
+                  const origemOdonto = item.tipo === "odonto" || item.origem === "odonto";
+                  const statusNorm = normalizarStatusPagamento(item.statusPagamento || item.status || "");
+                  return (
+                    <div
+                      key={item.id}
+                      style={{
+                        background: "var(--bg-muted, #f8fafc)",
+                        border: "1px solid var(--border)",
+                        borderRadius: "12px",
+                        padding: "12px 14px",
+                        display: "grid",
+                        gridTemplateColumns: "1fr auto",
+                        gap: "10px",
+                        alignItems: "start",
+                      }}
+                    >
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                          <span style={{ fontWeight: 700, fontSize: "14px" }}>
+                            {item.paciente || item.nomePaciente || "—"}
                           </span>
-                        </td>
-                        <td>{item.dataPagamento || "—"}</td>
-                      </tr>
-                    ))}
+                          {origemOdonto && (
+                            <span style={{ fontSize: "11px", background: "#f0fdf9", color: "#0f766e", border: "1px solid #99f6e4", borderRadius: "20px", padding: "1px 8px", fontWeight: 600 }}>
+                              🦷 Odonto
+                            </span>
+                          )}
+                          {!origemOdonto && (
+                            <span style={{ fontSize: "11px", background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe", borderRadius: "20px", padding: "1px 8px", fontWeight: 600 }}>
+                              🏥 Clínica
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "4px" }}>
+                          {item.tipoAtendimento || item.descricao || item.servico || "Atendimento"}
+                          {item.dataPagamento ? ` • ${item.dataPagamento}` : ""}
+                        </div>
+                        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
+                          <span className={badgePagamentoClasse(item.statusPagamento || item.status)}>
+                            {statusNorm === "pago" ? "✓ Pago" : statusNorm === "pendente" ? "⏳ Pendente" : statusNorm === "cortesia" ? "🎁 Cortesia" : item.statusPagamento || "—"}
+                          </span>
+                          {item.formaPagamento && (
+                            <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                              {item.formaPagamento}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontWeight: 700, fontSize: "15px", color: statusNorm === "pago" ? "#16a34a" : statusNorm === "cortesia" ? "#0891b2" : "var(--text)" }}>
+                          {formatarMoeda(item.valor || item.valorFinal || 0)}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
 
-                    {pagamentosRecentes.length === 0 && (
-                      <tr>
-                        <td colSpan="6">Nenhum pagamento registrado.</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
+                {pagamentosRecentes.length === 0 && (
+                  <div className="muted-box">Nenhum pagamento registrado.</div>
+                )}
               </div>
             </div>
           </div>
@@ -637,9 +657,9 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
                 <strong>{pagamento.statusPagamento || "—"}</strong>
               </div>
 
-              <div className="muted-box" style={{ marginTop: "12px" }}>
-                Ao salvar, o pagamento entra na coleção <strong>pagamentos</strong> e
-                alimenta automaticamente a área Financeiro.
+              <div style={{ marginTop: "12px", background: "#f0fdf4", border: "1px solid #86efac", borderRadius: "10px", padding: "10px 12px", fontSize: "13px", color: "#15803d" }}>
+                ✓ Ao salvar, atualiza automaticamente:<br />
+                <strong>Financeiro · Dashboard · Relatórios</strong>
               </div>
             </div>
 

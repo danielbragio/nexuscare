@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 
-export default function Prontuario({ consultas = [] }) {
+export default function Prontuario({ consultas = [], atendimentosOdonto = [] }) {
   const [busca, setBusca] = useState("");
   const [filtroProfissional, setFiltroProfissional] = useState("");
   const [filtroEspecialidade, setFiltroEspecialidade] = useState("");
@@ -59,6 +59,23 @@ export default function Prontuario({ consultas = [] }) {
         return dataB - dataA;
       });
   }, [prontuarios, prontuarioSelecionado]);
+
+  const historicoOdontoPaciente = useMemo(() => {
+    if (!prontuarioSelecionado?.paciente) return [];
+    const nomePaciente = prontuarioSelecionado.paciente;
+    return atendimentosOdonto
+      .filter(
+        (a) =>
+          a.status === "finalizado" &&
+          (a.pacienteNome === nomePaciente ||
+            a.paciente === nomePaciente)
+      )
+      .sort((a, b) => {
+        const tA = a.finalizadoEm?.toDate ? a.finalizadoEm.toDate().getTime() : 0;
+        const tB = b.finalizadoEm?.toDate ? b.finalizadoEm.toDate().getTime() : 0;
+        return tB - tA;
+      });
+  }, [atendimentosOdonto, prontuarioSelecionado]);
 
   const totalProntuarios = prontuarios.length;
   const totalPacientes = new Set(prontuarios.map((item) => item.paciente)).size;
@@ -250,6 +267,14 @@ ${item.prontuario?.observacoes || "—"}`;
               onClick={() => setAbaDetalhe("historico")}
             >
               Histórico
+            </button>
+
+            <button
+              className={`patients-tab ${abaDetalhe === "odonto" ? "active" : ""}`}
+              onClick={() => setAbaDetalhe("odonto")}
+              style={abaDetalhe === "odonto" ? { background: "#0f766e", borderColor: "#0f766e" } : {}}
+            >
+              🦷 Odonto
             </button>
           </div>
 
@@ -490,6 +515,64 @@ ${item.prontuario?.observacoes || "—"}`;
                     )}
                   </tbody>
                 </table>
+              </div>
+            )}
+
+            {abaDetalhe === "odonto" && (
+              <div>
+                <div className="muted-box" style={{ marginBottom: "16px", background: "#f0fdf9", border: "1px solid #99f6e4" }}>
+                  <strong>Histórico odontológico de {prontuarioSelecionado.paciente}</strong>
+                  <div>Atendimentos finalizados no módulo Odonto.</div>
+                </div>
+
+                {historicoOdontoPaciente.length === 0 ? (
+                  <div className="muted-box">Nenhum atendimento odontológico registrado.</div>
+                ) : (
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Data</th>
+                        <th>Profissional</th>
+                        <th>Procedimentos</th>
+                        <th>Total</th>
+                        <th>Desconto</th>
+                        <th>Valor final</th>
+                        <th>Pagamento</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {historicoOdontoPaciente.map((item) => {
+                        const dataFmt = item.finalizadoEm?.toDate
+                          ? item.finalizadoEm.toDate().toLocaleDateString("pt-BR")
+                          : item.data || "—";
+                        const procs = (item.procedimentosRealizados || [])
+                          .map((p) => p.nome)
+                          .join(", ") || "—";
+                        const moeda = (v) =>
+                          Number(v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+                        return (
+                          <tr key={item.id}>
+                            <td>{dataFmt}</td>
+                            <td>{item.profissionalNome || "—"}</td>
+                            <td style={{ maxWidth: "240px", whiteSpace: "normal" }}>{procs}</td>
+                            <td>{moeda(item.total)}</td>
+                            <td style={{ color: "#dc2626" }}>{moeda(item.desconto)}</td>
+                            <td><strong style={{ color: "#0f766e" }}>{moeda(item.valorFinal)}</strong></td>
+                            <td>
+                              <span className="badge" style={{
+                                background: item.statusPagamento === "pago" ? "#dcfce7" : "#fef9c3",
+                                color: item.statusPagamento === "pago" ? "#15803d" : "#854d0e",
+                                fontSize: "12px"
+                              }}>
+                                {item.statusPagamento || "pendente"}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
               </div>
             )}
           </div>

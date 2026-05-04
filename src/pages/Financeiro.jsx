@@ -31,6 +31,21 @@ export default function Financeiro() {
   const [salvandoConta, setSalvandoConta] = useState(false);
   const [salvandoAnexo, setSalvandoAnexo] = useState(false);
 
+  const [fornecedores, setFornecedores] = useState([]);
+  const [fornecedorSelecionado, setFornecedorSelecionado] = useState(null);
+  const [modoEdicaoFornecedor, setModoEdicaoFornecedor] = useState(false);
+  const [salvandoFornecedor, setSalvandoFornecedor] = useState(false);
+  const [novoFornecedor, setNovoFornecedor] = useState({
+    nome: "",
+    cnpj: "",
+    telefone: "",
+    email: "",
+    categoria: "",
+    contato: "",
+    endereco: "",
+    observacoes: "",
+  });
+
   const [filtros, setFiltros] = useState({
     fornecedor: "",
     status: "",
@@ -85,10 +100,8 @@ export default function Financeiro() {
   });
 
   useEffect(() => {
-    const q = query(collection(db, "pagamentos"), orderBy("criadoEm", "desc"));
-
     const unsubscribe = onSnapshot(
-      q,
+      collection(db, "pagamentos"),
       (snapshot) => {
         const lista = snapshot.docs.map((documento) => ({
           id: documento.id,
@@ -149,6 +162,14 @@ export default function Financeiro() {
       setHistoricoFinanceiro(lista);
     });
 
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const q = query(collection(db, "fornecedores"), orderBy("nome", "asc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setFornecedores(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
+    }, (err) => { console.error("fornecedores:", err); });
     return () => unsubscribe();
   }, []);
 
@@ -576,8 +597,9 @@ export default function Financeiro() {
     const anoAtual = hoje.getFullYear();
 
     const pagamentosDoMes = pagamentos.filter((item) => {
-      if (!item.dataPagamento) return false;
-      const data = new Date(`${item.dataPagamento}T00:00:00`);
+      const dataBase = item.dataPagamento || item.data || "";
+      if (!dataBase) return false;
+      const data = new Date(`${dataBase}T00:00:00`);
       return data.getMonth() === mesAtual && data.getFullYear() === anoAtual;
     });
 
@@ -589,7 +611,7 @@ export default function Financeiro() {
     });
 
     const receitaMes = pagamentosDoMes
-      .filter((item) => item.statusPagamento === "Pago")
+      .filter((item) => (item.statusPagamento || item.status || "").toLowerCase() === "pago")
       .reduce((total, item) => total + Number(item.valor || 0), 0);
 
     const despesasMes = contasPagarMes
@@ -600,24 +622,26 @@ export default function Financeiro() {
         0
       );
 
+    const statusNorm = (item) => (item.statusPagamento || item.status || "").toLowerCase();
+
     const contasReceber = pagamentos
-      .filter((item) => item.statusPagamento === "Pendente")
+      .filter((item) => statusNorm(item) === "pendente")
       .reduce((total, item) => total + Number(item.valor || 0), 0);
 
     const contasPagas = pagamentos
-      .filter((item) => item.statusPagamento === "Pago")
+      .filter((item) => statusNorm(item) === "pago")
       .reduce((total, item) => total + Number(item.valor || 0), 0);
 
     const contasPendentes = pagamentos.filter(
-      (item) => item.statusPagamento === "Pendente"
+      (item) => statusNorm(item) === "pendente"
     ).length;
 
     const contasCanceladas = pagamentos.filter(
-      (item) => item.statusPagamento === "Cancelado"
+      (item) => statusNorm(item) === "cancelado"
     ).length;
 
     const cortesias = pagamentos.filter(
-      (item) => item.statusPagamento === "Cortesia"
+      (item) => statusNorm(item) === "cortesia"
     ).length;
 
     const contasPagarPendentes = contasPagar.filter(
@@ -653,10 +677,12 @@ export default function Financeiro() {
   }, [pagamentos, contasPagar]);
 
   const contasAReceber = pagamentos.filter(
-    (item) => item.statusPagamento === "Pendente"
+    (item) => (item.statusPagamento || item.status || "").toLowerCase() === "pendente"
   );
 
-  const contasPagas = pagamentos.filter((item) => item.statusPagamento === "Pago");
+  const contasPagas = pagamentos.filter(
+    (item) => (item.statusPagamento || item.status || "").toLowerCase() === "pago"
+  );
 
   const contasPagarFiltradas = useMemo(() => {
     return contasPagar.filter((item) => {
@@ -704,13 +730,13 @@ export default function Financeiro() {
   const movimentacoes = useMemo(() => {
     const entradas = pagamentos.map((item) => ({
       id: `pagamento-${item.id}`,
-      data: item.dataPagamento,
+      data: item.dataPagamento || item.data || "",
       tipo: "Entrada",
-      origem: item.origem || "Recepção",
-      descricao: item.tipoAtendimento || "Pagamento de paciente",
-      pessoa: item.paciente || "—",
+      origem: item.origem === "odonto" ? "Odontologia" : item.origem || "Recepção",
+      descricao: item.tipoAtendimento || item.descricao || item.servico || "Pagamento de paciente",
+      pessoa: item.paciente || item.nomePaciente || "—",
       forma: item.formaPagamento || "—",
-      status: item.statusPagamento || "—",
+      status: item.statusPagamento || item.status || "—",
       categoria: "Receita",
       valor: Number(item.valor || 0),
     }));
@@ -745,6 +771,72 @@ export default function Financeiro() {
 
     return Object.entries(mapa).map(([forma, valor]) => ({ forma, valor }));
   }, [pagamentos]);
+
+  function limparFornecedor() {
+    setFornecedorSelecionado(null);
+    setModoEdicaoFornecedor(false);
+    setNovoFornecedor({ nome: "", cnpj: "", telefone: "", email: "", categoria: "", contato: "", endereco: "", observacoes: "" });
+  }
+
+  function editarFornecedor(f) {
+    setFornecedorSelecionado(f);
+    setModoEdicaoFornecedor(true);
+    setNovoFornecedor({
+      nome: f.nome || "",
+      cnpj: f.cnpj || "",
+      telefone: f.telefone || "",
+      email: f.email || "",
+      categoria: f.categoria || "",
+      contato: f.contato || "",
+      endereco: f.endereco || "",
+      observacoes: f.observacoes || "",
+    });
+  }
+
+  async function salvarFornecedor() {
+    if (!novoFornecedor.nome.trim()) {
+      alert("Informe o nome do fornecedor.");
+      return;
+    }
+    try {
+      setSalvandoFornecedor(true);
+      const payload = {
+        nome: novoFornecedor.nome.trim(),
+        cnpj: novoFornecedor.cnpj.trim(),
+        telefone: novoFornecedor.telefone.trim(),
+        email: novoFornecedor.email.trim(),
+        categoria: novoFornecedor.categoria.trim(),
+        contato: novoFornecedor.contato.trim(),
+        endereco: novoFornecedor.endereco.trim(),
+        observacoes: novoFornecedor.observacoes.trim(),
+        atualizadoEm: serverTimestamp(),
+      };
+      if (modoEdicaoFornecedor && fornecedorSelecionado?.id) {
+        await updateDoc(doc(db, "fornecedores", fornecedorSelecionado.id), payload);
+        alert("Fornecedor atualizado.");
+      } else {
+        await addDoc(collection(db, "fornecedores"), { ...payload, criadoEm: serverTimestamp() });
+        alert("Fornecedor cadastrado.");
+      }
+      limparFornecedor();
+    } catch (err) {
+      console.error("Erro ao salvar fornecedor:", err);
+      alert("Não foi possível salvar o fornecedor.");
+    } finally {
+      setSalvandoFornecedor(false);
+    }
+  }
+
+  async function excluirFornecedor(f) {
+    if (!window.confirm(`Excluir o fornecedor "${f.nome}"?`)) return;
+    try {
+      await deleteDoc(doc(db, "fornecedores", f.id));
+      if (fornecedorSelecionado?.id === f.id) limparFornecedor();
+    } catch (err) {
+      console.error("Erro ao excluir fornecedor:", err);
+      alert("Não foi possível excluir o fornecedor.");
+    }
+  }
 
   return (
     <div className="financeiro-page">
@@ -849,6 +941,13 @@ export default function Financeiro() {
             onClick={() => setAbaAtiva("relatorios")}
           >
             Relatórios
+          </button>
+
+          <button
+            className={`patients-tab ${abaAtiva === "fornecedores" ? "active" : ""}`}
+            onClick={() => setAbaAtiva("fornecedores")}
+          >
+            🏢 Fornecedores
           </button>
         </div>
 
@@ -1659,7 +1758,7 @@ export default function Financeiro() {
                       {contasAReceber.map((item) => (
                         <tr key={item.id}>
                           <td>{item.paciente || "—"}</td>
-                          <td>{item.tipoAtendimento || "—"}</td>
+                          <td>{item.tipoAtendimento || item.descricao || item.servico || "—"}</td>
                           <td>{formatarMoeda(item.valor)}</td>
                           <td>{item.dataVencimento || item.dataPagamento || "—"}</td>
                           <td>{item.dataPagamento || "—"}</td>
@@ -1718,7 +1817,7 @@ export default function Financeiro() {
                       {contasPagas.map((item) => (
                         <tr key={item.id}>
                           <td>{item.paciente || "—"}</td>
-                          <td>{item.tipoAtendimento || "—"}</td>
+                          <td>{item.tipoAtendimento || item.descricao || item.servico || "—"}</td>
                           <td>{formatarMoeda(item.valor)}</td>
                           <td>{item.formaPagamento || "—"}</td>
                           <td>{item.dataPagamento || "—"}</td>
@@ -1958,6 +2057,220 @@ export default function Financeiro() {
                       )}
                     </tbody>
                   </table>
+                </div>
+              </div>
+            )}
+            {abaAtiva === "fornecedores" && (
+              <div style={{ marginTop: "20px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
+                  <div>
+                    <h3 style={{ margin: 0 }}>
+                      {modoEdicaoFornecedor ? "Editar Fornecedor" : "Cadastrar Fornecedor"}
+                    </h3>
+                    <p className="page-subtitle" style={{ margin: "4px 0 0" }}>
+                      Gerencie os fornecedores vinculados às contas a pagar.
+                    </p>
+                  </div>
+                  {modoEdicaoFornecedor && (
+                    <button className="secondary-btn" onClick={limparFornecedor}>
+                      Cancelar edição
+                    </button>
+                  )}
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
+                  <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "14px", padding: "20px" }}>
+                    <h4 style={{ margin: "0 0 16px", fontSize: "14px", fontWeight: 700 }}>
+                      {modoEdicaoFornecedor ? `Editando: ${fornecedorSelecionado?.nome}` : "Novo fornecedor"}
+                    </h4>
+
+                    <div className="patients-form-grid">
+                      <div className="patients-full-width">
+                        <label>Nome do fornecedor *</label>
+                        <input
+                          className="input"
+                          value={novoFornecedor.nome}
+                          onChange={(e) => setNovoFornecedor((p) => ({ ...p, nome: e.target.value }))}
+                          placeholder="Razão social ou nome fantasia"
+                        />
+                      </div>
+
+                      <div>
+                        <label>CNPJ</label>
+                        <input
+                          className="input"
+                          value={novoFornecedor.cnpj}
+                          onChange={(e) => setNovoFornecedor((p) => ({ ...p, cnpj: e.target.value }))}
+                          placeholder="00.000.000/0000-00"
+                        />
+                      </div>
+
+                      <div>
+                        <label>Categoria</label>
+                        <select
+                          className="select"
+                          value={novoFornecedor.categoria}
+                          onChange={(e) => setNovoFornecedor((p) => ({ ...p, categoria: e.target.value }))}
+                        >
+                          <option value="">Selecionar categoria</option>
+                          <option value="Material médico">Material médico</option>
+                          <option value="Material odontológico">Material odontológico</option>
+                          <option value="Equipamentos">Equipamentos</option>
+                          <option value="Serviços">Serviços</option>
+                          <option value="Manutenção">Manutenção</option>
+                          <option value="Limpeza">Limpeza</option>
+                          <option value="Aluguel">Aluguel</option>
+                          <option value="Tecnologia">Tecnologia</option>
+                          <option value="Outros">Outros</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label>Telefone / WhatsApp</label>
+                        <input
+                          className="input"
+                          value={novoFornecedor.telefone}
+                          onChange={(e) => setNovoFornecedor((p) => ({ ...p, telefone: e.target.value }))}
+                          placeholder="(00) 00000-0000"
+                        />
+                      </div>
+
+                      <div>
+                        <label>E-mail</label>
+                        <input
+                          className="input"
+                          type="email"
+                          value={novoFornecedor.email}
+                          onChange={(e) => setNovoFornecedor((p) => ({ ...p, email: e.target.value }))}
+                          placeholder="contato@fornecedor.com.br"
+                        />
+                      </div>
+
+                      <div>
+                        <label>Nome do contato</label>
+                        <input
+                          className="input"
+                          value={novoFornecedor.contato}
+                          onChange={(e) => setNovoFornecedor((p) => ({ ...p, contato: e.target.value }))}
+                          placeholder="Responsável pelo atendimento"
+                        />
+                      </div>
+
+                      <div className="patients-full-width">
+                        <label>Endereço</label>
+                        <input
+                          className="input"
+                          value={novoFornecedor.endereco}
+                          onChange={(e) => setNovoFornecedor((p) => ({ ...p, endereco: e.target.value }))}
+                          placeholder="Rua, número, cidade"
+                        />
+                      </div>
+
+                      <div className="patients-full-width">
+                        <label>Observações</label>
+                        <textarea
+                          className="textarea"
+                          value={novoFornecedor.observacoes}
+                          onChange={(e) => setNovoFornecedor((p) => ({ ...p, observacoes: e.target.value }))}
+                          placeholder="Prazo de pagamento, condições especiais..."
+                          rows={3}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="patients-form-actions" style={{ marginTop: "16px" }}>
+                      <button
+                        className="primary-btn"
+                        onClick={salvarFornecedor}
+                        disabled={salvandoFornecedor}
+                      >
+                        {salvandoFornecedor
+                          ? "Salvando..."
+                          : modoEdicaoFornecedor
+                          ? "Atualizar fornecedor"
+                          : "Cadastrar fornecedor"}
+                      </button>
+                      <button className="secondary-btn" onClick={limparFornecedor}>
+                        Limpar
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+                      <h4 style={{ margin: 0, fontSize: "14px", fontWeight: 700 }}>
+                        Fornecedores cadastrados ({fornecedores.length})
+                      </h4>
+                    </div>
+
+                    <div style={{ display: "grid", gap: "10px", maxHeight: "540px", overflowY: "auto", paddingRight: "4px" }}>
+                      {fornecedores.length === 0 && (
+                        <div className="muted-box">Nenhum fornecedor cadastrado.</div>
+                      )}
+                      {fornecedores.map((f) => (
+                        <div
+                          key={f.id}
+                          style={{
+                            background: fornecedorSelecionado?.id === f.id ? "rgba(99,102,241,0.07)" : "var(--bg-card)",
+                            border: `1px solid ${fornecedorSelecionado?.id === f.id ? "rgba(99,102,241,0.35)" : "var(--border)"}`,
+                            borderRadius: "12px",
+                            padding: "14px 16px",
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "8px" }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontWeight: 700, fontSize: "14px", marginBottom: "4px" }}>{f.nome}</div>
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "6px" }}>
+                                {f.categoria && (
+                                  <span className="patients-badge patients-badge-blue" style={{ fontSize: "11px" }}>
+                                    {f.categoria}
+                                  </span>
+                                )}
+                                {f.cnpj && (
+                                  <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                                    CNPJ: {f.cnpj}
+                                  </span>
+                                )}
+                              </div>
+                              {(f.telefone || f.email) && (
+                                <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                                  {f.telefone && <span>📞 {f.telefone}</span>}
+                                  {f.telefone && f.email && <span style={{ margin: "0 6px" }}>•</span>}
+                                  {f.email && <span>✉️ {f.email}</span>}
+                                </div>
+                              )}
+                              {f.contato && (
+                                <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "2px" }}>
+                                  Contato: {f.contato}
+                                </div>
+                              )}
+                            </div>
+                            <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+                              <button
+                                className="secondary-btn"
+                                style={{ padding: "4px 10px", fontSize: "12px" }}
+                                onClick={() => editarFornecedor(f)}
+                              >
+                                Editar
+                              </button>
+                              <button
+                                className="secondary-btn"
+                                style={{ padding: "4px 10px", fontSize: "12px", color: "#dc2626", borderColor: "#fca5a5" }}
+                                onClick={() => excluirFornecedor(f)}
+                              >
+                                Excluir
+                              </button>
+                            </div>
+                          </div>
+                          {f.observacoes && (
+                            <div style={{ marginTop: "8px", fontSize: "12px", color: "var(--text-muted)", background: "var(--bg-muted)", borderRadius: "8px", padding: "6px 10px" }}>
+                              {f.observacoes}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}

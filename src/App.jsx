@@ -325,6 +325,8 @@ export default function App() {
   const [pagamentos, setPagamentos] = useState([]);
   const [consultorios, setConsultorios] = useState([]);
   const [users, setUsers] = useState([]);
+  const [atendimentosOdonto, setAtendimentosOdonto] = useState([]);
+  const [procedimentosOdonto, setProcedimentosOdonto] = useState([]);
   const [dataLoading, setDataLoading] = useState(true);
 
   const isMedico =
@@ -348,6 +350,8 @@ export default function App() {
       setPagamentos([]);
       setConsultorios([]);
       setUsers([]);
+      setAtendimentosOdonto([]);
+      setProcedimentosOdonto([]);
       setDataLoading(false);
       return;
     }
@@ -407,12 +411,26 @@ export default function App() {
       setUsers(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
     });
 
+    const unsubAtendimentosOdonto = onSnapshot(
+      query(collection(db, "atendimentosOdonto"), orderBy("createdAt", "desc")),
+      (snap) => setAtendimentosOdonto(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      (err) => { console.error("atendimentosOdonto:", err); setAtendimentosOdonto([]); }
+    );
+
+    const unsubProcedimentosOdonto = onSnapshot(
+      query(collection(db, "procedimentosOdonto"), orderBy("nome", "asc")),
+      (snap) => setProcedimentosOdonto(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      (err) => { console.error("procedimentosOdonto:", err); setProcedimentosOdonto([]); }
+    );
+
     return () => {
       unsubPacientes();
       unsubConsultas();
       unsubPagamentos();
       unsubConsultorios();
       unsubUsers();
+      unsubAtendimentosOdonto();
+      unsubProcedimentosOdonto();
     };
   }, [firebaseUser]);
 
@@ -589,8 +607,11 @@ export default function App() {
       altas: consultas.filter((c) => c.status === "finalizado").length,
       totalPacientes: pacientes.length,
       pagamentos: pagamentos.length,
+      odontoAguardando: atendimentosOdonto.filter((a) => a.status === "aguardando").length,
+      odontoEmAtendimento: atendimentosOdonto.filter((a) => a.status === "em_atendimento").length,
+      odontoFinalizados: atendimentosOdonto.filter((a) => a.status === "finalizado").length,
     };
-  }, [consultas, pacientes, pagamentos]);
+  }, [consultas, pacientes, pagamentos, atendimentosOdonto]);
 
   function getFirstAllowedView() {
     const orderedViews = [
@@ -634,6 +655,7 @@ export default function App() {
             consultas={consultas}
             pagamentos={pagamentos}
             users={users}
+            procedimentosOdonto={procedimentosOdonto}
             onAdicionarPaciente={adicionarPaciente}
             onAdicionarConsulta={adicionarConsulta}
           />
@@ -677,7 +699,15 @@ export default function App() {
         return <Enfermagem />;
 
       case "odonto":
-        return <Odonto pacientes={pacientes} users={users} />;
+        return (
+          <Odonto
+            pacientes={pacientes}
+            users={users}
+            userData={userData}
+            pagamentos={pagamentos}
+            procedimentosOdonto={procedimentosOdonto}
+          />
+        );
 
       case "faturamento":
         return <Faturamento />;
@@ -705,7 +735,7 @@ export default function App() {
         return <Normas />;
 
       case "prontuario":
-        return <Prontuario consultas={consultas} />;
+        return <Prontuario consultas={consultas} atendimentosOdonto={atendimentosOdonto} />;
 
       case "estoque":
         return <Estoque />;
@@ -732,6 +762,7 @@ export default function App() {
             pacientes={pacientes}
             consultorios={consultorios}
             users={users}
+            atendimentosOdonto={atendimentosOdonto}
           />
         );
     }

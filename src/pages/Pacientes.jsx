@@ -7,6 +7,7 @@ import {
   getDocs,
   query,
   serverTimestamp,
+  updateDoc,
   where,
 } from "firebase/firestore";
 import {
@@ -123,6 +124,30 @@ function obterNomeProfissional(profissional) {
 
 function obterIdProfissional(profissional) {
   return profissional.id || profissional.uid || profissional.medicoId || profissional.userId || "";
+}
+
+function profissionalEhOdontologico(profissional) {
+  const role = normalizarTexto(profissional.role);
+  const cargo = normalizarTexto(profissional.cargo || "");
+  const tipo = normalizarTexto(profissional.tipo || "");
+  const especialidade = normalizarTexto(profissional.especialidade || "");
+  const permissions = Array.isArray(profissional.permissions)
+    ? profissional.permissions.map(normalizarTexto)
+    : [];
+  return (
+    role === "odonto" ||
+    role === "odontologo" ||
+    role === "odontólogo" ||
+    role === "dentista" ||
+    cargo.includes("odonto") ||
+    cargo.includes("dentis") ||
+    tipo.includes("odonto") ||
+    tipo.includes("dentis") ||
+    especialidade.includes("odonto") ||
+    especialidade.includes("dentis") ||
+    Boolean(profissional.cro) ||
+    permissions.includes("odonto")
+  );
 }
 
 function profissionalEhAssistencial(profissional) {
@@ -315,6 +340,7 @@ function consultaOcupaHorario(consulta) {
 export default function Pacientes({
   pacientes = [],
   consultas = [],
+  procedimentosOdonto = [],
   onAdicionarPaciente,
   onAdicionarConsulta,
 }) {
@@ -348,6 +374,14 @@ export default function Pacientes({
     observacoes: "",
   });
 
+  const [destinoAtendimento, setDestinoAtendimento] = useState("medico");
+  const [procedimentosSelecionadosOdonto, setProcedimentosSelecionadosOdonto] = useState([]);
+  const [profissionaisOdonto, setProfissionaisOdonto] = useState([]);
+  const [carregandoProfissionaisOdonto, setCarregandoProfissionaisOdonto] = useState(false);
+  const [profissionalOdontoId, setProfissionalOdontoId] = useState("");
+  const [profissionalOdontoNome, setProfissionalOdontoNome] = useState("");
+  const [horaOdonto, setHoraOdonto] = useState("");
+
   const [agendamento, setAgendamento] = useState({
     nomePaciente: "",
     cpf: "",
@@ -367,6 +401,26 @@ export default function Pacientes({
   useEffect(() => {
     carregarProfissionaisDisponiveis(agendamento.data);
   }, [agendamento.data, consultas]);
+
+  useEffect(() => {
+    if (destinoAtendimento === "odonto") {
+      carregarProfissionaisOdonto();
+    }
+  }, [destinoAtendimento]);
+
+  async function carregarProfissionaisOdonto() {
+    try {
+      setCarregandoProfissionaisOdonto(true);
+      const snap = await getDocs(query(collection(db, "users"), where("ativo", "==", true)));
+      const todos = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setProfissionaisOdonto(todos.filter(profissionalEhOdontologico));
+    } catch (e) {
+      console.error("Erro ao carregar profissionais odonto:", e);
+      setProfissionaisOdonto([]);
+    } finally {
+      setCarregandoProfissionaisOdonto(false);
+    }
+  }
 
   async function carregarProfissionaisDisponiveis(dataSelecionada) {
     if (!dataSelecionada) {
@@ -564,9 +618,13 @@ export default function Pacientes({
       observacoesRecepcao: "",
       tipoAtendimento: "Agendamento",
     });
-
+    setDestinoAtendimento("medico");
+    setProcedimentosSelecionadosOdonto([]);
     setProfissionaisDisponiveis([]);
     setHorariosDisponiveis([]);
+    setProfissionalOdontoId("");
+    setProfissionalOdontoNome("");
+    setHoraOdonto("");
   }
 
   function novoCadastro() {
@@ -610,17 +668,100 @@ export default function Pacientes({
   }
 
   async function registrarAtendimento() {
+    if (!agendamento.nomePaciente || !agendamento.data) {
+      alert("Preencha ao menos o nome do paciente e a data.");
+      return;
+    }
+
+    if (destinoAtendimento === "odonto") {
+      if (!agendamento.nomePaciente.trim()) {
+        alert("Informe o nome do paciente.");
+        return;
+      }
+      try {
+        setSalvandoConsulta(true);
+        const statusInicial =
+          agendamento.tipoAtendimento === "Atendimento Imediato" ? "aguardando" : "agendado";
+        const tipoAtend =
+          agendamento.tipoAtendimento === "Atendimento Imediato" ? "Consulta Imediata" : "Consulta";
+        const valorTotal = procedimentosSelecionadosOdonto.reduce(
+          (acc, p) => acc + Number(p.valor || 0), 0
+        );
+        const descricaoProc =
+          procedimentosSelecionadosOdonto.map((p) => p.nome).join(", ") ||
+          "Atendimento odontológico";
+        const dataHoje = new Date().toISOString().split("T")[0];
+
+        // 1. Criar agendamento odonto
+        const agRef = await addDoc(collection(db, "agendamentosOdonto"), {
+          pacienteNome: agendamento.nomePaciente,
+          pacienteId: "",
+          profissionalNome: profissionalOdontoNome || "",
+          profissionalId: profissionalOdontoId || "",
+          data: agendamento.data || dataHoje,
+          hora: horaOdonto || "",
+          tipoAtendimento: tipoAtend,
+          status: statusInicial,
+          procedimentosSolicitados: procedimentosSelecionadosOdonto,
+          valorEstimado: valorTotal,
+          observacoes: agendamento.observacoesRecepcao,
+          origemRecepcao: true,
+          pagamentoId: "",
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+
+        // 2. Criar pagamento pendente vinculado
+        const pagRef = await addDoc(collection(db, "pagamentos"), {
+          paciente: agendamento.nomePaciente,
+          nomePaciente: agendamento.nomePaciente,
+          pacienteId: "",
+          profissional: profissionalOdontoNome || "",
+          profissionalId: profissionalOdontoId || "",
+          descricao: descricaoProc,
+          servico: "Odontologia",
+          procedimentos: procedimentosSelecionadosOdonto,
+          valor: valorTotal,
+          status: "pendente",
+          statusPagamento: "Pendente",
+          formaPagamento: "",
+          tipo: "odonto",
+          origem: "odonto",
+          agendamentoId: agRef.id,
+          atendimentoOdontoId: "",
+          data: agendamento.data || dataHoje,
+          dataPagamento: "",
+          createdAt: serverTimestamp(),
+        });
+
+        // 3. Vincular pagamentoId no agendamento
+        await updateDoc(doc(db, "agendamentosOdonto", agRef.id), {
+          pagamentoId: pagRef.id,
+        });
+
+        limparAgendamento();
+        alert(
+          `Paciente encaminhado para Odontologia.\nPagamento pendente de ${valorTotal.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })} criado no módulo Pagamentos.`
+        );
+      } catch (error) {
+        console.error("Erro ao encaminhar para odonto:", error);
+        alert("Não foi possível encaminhar para Odontologia.");
+      } finally {
+        setSalvandoConsulta(false);
+      }
+      return;
+    }
+
+    // Destino: médico (fluxo original)
     if (
-      !agendamento.nomePaciente ||
       !agendamento.cpf ||
       !agendamento.telefone ||
       !agendamento.medico ||
       !agendamento.especialidade ||
-      !agendamento.data ||
       !agendamento.hora ||
       !agendamento.tipoAtendimento
     ) {
-      alert("Preencha os dados do atendimento.");
+      alert("Preencha todos os dados do atendimento médico.");
       return;
     }
 
@@ -1332,6 +1473,83 @@ export default function Pacientes({
                       </select>
                     </div>
 
+                    <div className="patients-full-width">
+                      <label>Destino do atendimento</label>
+                      <div style={{ display: "flex", gap: "10px", marginTop: "6px" }}>
+                        <button
+                          type="button"
+                          onClick={() => { setDestinoAtendimento("medico"); setProcedimentosSelecionadosOdonto([]); }}
+                          style={{
+                            flex: 1, padding: "10px", border: "2px solid",
+                            borderRadius: "10px", cursor: "pointer", fontWeight: 600, fontSize: "13px",
+                            borderColor: destinoAtendimento === "medico" ? "#2563eb" : "#cbd5e1",
+                            background: destinoAtendimento === "medico" ? "#eff6ff" : "#fff",
+                            color: destinoAtendimento === "medico" ? "#2563eb" : "#64748b",
+                          }}
+                        >
+                          👨‍⚕️ Médico / Clínica
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDestinoAtendimento("odonto")}
+                          style={{
+                            flex: 1, padding: "10px", border: "2px solid",
+                            borderRadius: "10px", cursor: "pointer", fontWeight: 600, fontSize: "13px",
+                            borderColor: destinoAtendimento === "odonto" ? "#0f766e" : "#cbd5e1",
+                            background: destinoAtendimento === "odonto" ? "#f0fdf9" : "#fff",
+                            color: destinoAtendimento === "odonto" ? "#0f766e" : "#64748b",
+                          }}
+                        >
+                          🦷 Odontologia
+                        </button>
+                      </div>
+                    </div>
+
+                    {destinoAtendimento === "odonto" && (
+                      <div className="patients-full-width">
+                        <label>Procedimentos odontológicos (opcional)</label>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "8px" }}>
+                          {procedimentosOdonto
+                            .filter((p) => p.status === "ativo")
+                            .map((proc) => {
+                              const sel = procedimentosSelecionadosOdonto.some((p) => p.id === proc.id);
+                              return (
+                                <button
+                                  key={proc.id}
+                                  type="button"
+                                  onClick={() => {
+                                    if (sel) {
+                                      setProcedimentosSelecionadosOdonto((prev) =>
+                                        prev.filter((p) => p.id !== proc.id)
+                                      );
+                                    } else {
+                                      setProcedimentosSelecionadosOdonto((prev) => [...prev, proc]);
+                                    }
+                                  }}
+                                  style={{
+                                    padding: "6px 12px", fontSize: "12px", borderRadius: "8px",
+                                    border: "1px solid", cursor: "pointer", fontWeight: 600,
+                                    borderColor: sel ? "#0f766e" : "#cbd5e1",
+                                    background: sel ? "#0f766e" : "#fff",
+                                    color: sel ? "#fff" : "#334155",
+                                  }}
+                                >
+                                  {proc.nome} — {Number(proc.valor || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+                                </button>
+                              );
+                            })}
+                        </div>
+                        {procedimentosSelecionadosOdonto.length > 0 && (
+                          <div style={{ marginTop: "8px", fontSize: "13px", color: "#0f766e", fontWeight: 700 }}>
+                            Total estimado:{" "}
+                            {procedimentosSelecionadosOdonto
+                              .reduce((acc, p) => acc + Number(p.valor || 0), 0)
+                              .toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     <div>
                       <label>Data</label>
                       <input
@@ -1343,71 +1561,119 @@ export default function Pacientes({
                       />
                     </div>
 
-                    <div>
-                      <label>Profissional</label>
-                      <select
-                        className="select"
-                        name="medico"
-                        value={agendamento.medicoId}
-                        onChange={handleAgendamentoChange}
-                        disabled={profissionalDesabilitado}
-                      >
-                        <option value="">
-                          {!agendamento.data
-                            ? "Selecione uma data primeiro"
-                            : carregandoProfissionais
-                            ? "Carregando profissionais..."
-                            : profissionaisDisponiveis.length === 0
-                            ? "Nenhum profissional disponível para esta data"
-                            : "Selecione o profissional"}
-                        </option>
-
-                        {profissionaisDisponiveis.map((profissional) => (
-                          <option
-                            key={obterIdProfissional(profissional)}
-                            value={obterIdProfissional(profissional)}
+                    {destinoAtendimento === "odonto" ? (
+                      <>
+                        <div>
+                          <label>Profissional odontológico</label>
+                          <select
+                            className="select"
+                            value={profissionalOdontoId}
+                            onChange={(e) => {
+                              const id = e.target.value;
+                              const prof = profissionaisOdonto.find((p) => (p.id || p.uid) === id);
+                              setProfissionalOdontoId(id);
+                              setProfissionalOdontoNome(prof ? obterNomeProfissional(prof) : "");
+                            }}
+                            disabled={carregandoProfissionaisOdonto}
                           >
-                            {profissional.nomeExibicao} — {profissional.totalHorariosLivres} horário(s)
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                            <option value="">
+                              {carregandoProfissionaisOdonto
+                                ? "Carregando..."
+                                : profissionaisOdonto.length === 0
+                                ? "Nenhum profissional odontológico cadastrado"
+                                : "Selecione o dentista / profissional"}
+                            </option>
+                            {profissionaisOdonto.map((prof) => (
+                              <option key={prof.id || prof.uid} value={prof.id || prof.uid}>
+                                {obterNomeProfissional(prof)}
+                                {prof.especialidade ? ` — ${prof.especialidade}` : ""}
+                              </option>
+                            ))}
+                          </select>
+                          {profissionaisOdonto.length === 0 && !carregandoProfissionaisOdonto && (
+                            <div style={{ fontSize: "12px", color: "#f59e0b", marginTop: "4px" }}>
+                              Cadastre um profissional com perfil "Odonto" na Administração para que ele apareça aqui.
+                            </div>
+                          )}
+                        </div>
 
-                    <div>
-                      <label>Especialidade</label>
-                      <input
-                        className="input"
-                        name="especialidade"
-                        value={agendamento.especialidade}
-                        onChange={handleAgendamentoChange}
-                        placeholder="Ex.: Médico, Enfermeiro, Odontólogo, Fisioterapeuta"
-                      />
-                    </div>
+                        <div>
+                          <label>Horário preferencial</label>
+                          <input
+                            className="input"
+                            type="time"
+                            value={horaOdonto}
+                            onChange={(e) => setHoraOdonto(e.target.value)}
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div>
+                          <label>Profissional</label>
+                          <select
+                            className="select"
+                            name="medico"
+                            value={agendamento.medicoId}
+                            onChange={handleAgendamentoChange}
+                            disabled={profissionalDesabilitado}
+                          >
+                            <option value="">
+                              {!agendamento.data
+                                ? "Selecione uma data primeiro"
+                                : carregandoProfissionais
+                                ? "Carregando profissionais..."
+                                : profissionaisDisponiveis.length === 0
+                                ? "Nenhum profissional disponível para esta data"
+                                : "Selecione o profissional"}
+                            </option>
+                            {profissionaisDisponiveis.map((profissional) => (
+                              <option
+                                key={obterIdProfissional(profissional)}
+                                value={obterIdProfissional(profissional)}
+                              >
+                                {profissional.nomeExibicao} — {profissional.totalHorariosLivres} horário(s)
+                              </option>
+                            ))}
+                          </select>
+                        </div>
 
-                    <div>
-                      <label>Hora</label>
-                      <select
-                        className="select"
-                        name="hora"
-                        value={agendamento.hora}
-                        onChange={handleAgendamentoChange}
-                        disabled={horarioDesabilitado}
-                      >
-                        <option value="">
-                          {!agendamento.medico
-                            ? "Selecione um profissional"
-                            : horariosDisponiveis.length === 0
-                            ? "Nenhum horário disponível"
-                            : "Selecione o horário"}
-                        </option>
+                        <div>
+                          <label>Especialidade</label>
+                          <input
+                            className="input"
+                            name="especialidade"
+                            value={agendamento.especialidade}
+                            onChange={handleAgendamentoChange}
+                            placeholder="Ex.: Médico, Enfermeiro, Fisioterapeuta"
+                          />
+                        </div>
 
-                        {horariosDisponiveis.map((hora) => (
-                          <option key={hora} value={hora}>
-                            {hora}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                        <div>
+                          <label>Hora</label>
+                          <select
+                            className="select"
+                            name="hora"
+                            value={agendamento.hora}
+                            onChange={handleAgendamentoChange}
+                            disabled={horarioDesabilitado}
+                          >
+                            <option value="">
+                              {!agendamento.medico
+                                ? "Selecione um profissional"
+                                : horariosDisponiveis.length === 0
+                                ? "Nenhum horário disponível"
+                                : "Selecione o horário"}
+                            </option>
+                            {horariosDisponiveis.map((hora) => (
+                              <option key={hora} value={hora}>
+                                {hora}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </>
+                    )}
 
                     <div className="patients-full-width">
                       <label>Observações da recepção</label>
@@ -1425,9 +1691,13 @@ export default function Pacientes({
                     <button
                       onClick={registrarAtendimento}
                       className="primary-btn"
-                      disabled={salvandoConsulta || carregandoProfissionais}
+                      disabled={salvandoConsulta || (destinoAtendimento === "medico" && carregandoProfissionais)}
                     >
-                      {salvandoConsulta ? "Enviando..." : "Enviar para o profissional"}
+                      {salvandoConsulta
+                        ? "Enviando..."
+                        : destinoAtendimento === "odonto"
+                        ? "🦷 Encaminhar para Odontologia"
+                        : "Enviar para o profissional"}
                     </button>
                     <button onClick={limparAgendamento} className="secondary-btn">
                       Limpar

@@ -650,7 +650,7 @@ function ColunaFluxo({ titulo, lista }) {
   );
 }
 
-export default function Dashboard({ consultas = [], pagamentos = [] }) {
+export default function Dashboard({ consultas = [], pagamentos = [], atendimentosOdonto = [] }) {
   const [agora, setAgora] = useState(new Date());
 
   useEffect(() => {
@@ -729,6 +729,29 @@ export default function Dashboard({ consultas = [], pagamentos = [] }) {
       })
       .reduce((total, pagamento) => total + Number(pagamento.valor || 0), 0);
   }, [pagamentos, dataHoje]);
+
+  const odontoAguardando = atendimentosOdonto.filter((a) => a.status === "aguardando").length;
+  const odontoEmAtendimento = atendimentosOdonto.filter((a) => a.status === "em_atendimento").length;
+  const odontoFinalizados = atendimentosOdonto.filter((a) => a.status === "finalizado").length;
+  const receitaOdonto = useMemo(() => {
+    const dePagamentos = pagamentos
+      .filter((p) => {
+        const origem = normalizarTexto(p.origem || p.tipo || "");
+        const status = normalizarTexto(p.statusPagamento || p.status || "");
+        return origem === "odonto" && (status === "pago" || status === "paga");
+      })
+      .reduce((acc, p) => acc + Number(p.valor || p.valorFinal || 0), 0);
+
+    const deAtendimentos = atendimentosOdonto
+      .filter((a) => {
+        if (a.pagamentoId) return false;
+        const st = normalizarTexto(a.statusPagamento || a.financeiro?.statusFinanceiro || "");
+        return st === "pago" || st === "paga";
+      })
+      .reduce((acc, a) => acc + Number(a.valorFinal || 0), 0);
+
+    return dePagamentos + deAtendimentos;
+  }, [pagamentos, atendimentosOdonto]);
 
   const consultorios = useMemo(() => {
     const salas = Array.from({ length: 7 }, (_, index) => ({
@@ -862,6 +885,37 @@ export default function Dashboard({ consultas = [], pagamentos = [] }) {
           <small>Pagamentos confirmados</small>
         </div>
       </div>
+
+      {atendimentosOdonto.length > 0 && (
+        <div style={{ background: "#f0fdf9", border: "1px solid #99f6e4", borderRadius: "18px", padding: "16px 18px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
+            <span style={{ fontSize: "18px" }}>🦷</span>
+            <h3 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "#0f766e" }}>Odontologia — tempo real</h3>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(100px, 1fr))", gap: "10px" }}>
+            <div className="dashboard-kpi-card" style={{ borderTop: "3px solid #f59e0b" }}>
+              <span>Aguardando</span>
+              <strong style={{ color: "#f59e0b" }}>{odontoAguardando}</strong>
+              <small>Na fila odonto</small>
+            </div>
+            <div className="dashboard-kpi-card" style={{ borderTop: "3px solid #0f766e" }}>
+              <span>Em atendimento</span>
+              <strong style={{ color: "#0f766e" }}>{odontoEmAtendimento}</strong>
+              <small>No consultório odonto</small>
+            </div>
+            <div className="dashboard-kpi-card" style={{ borderTop: "3px solid #16a34a" }}>
+              <span>Finalizados</span>
+              <strong style={{ color: "#16a34a" }}>{odontoFinalizados}</strong>
+              <small>Atendimentos concluídos</small>
+            </div>
+            <div className="dashboard-kpi-card" style={{ borderTop: "3px solid #0f766e" }}>
+              <span>Receita odonto</span>
+              <strong style={{ color: "#0f766e" }}>{formatarMoeda(receitaOdonto)}</strong>
+              <small>Pagamentos confirmados</small>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="dashboard-main-grid">
         <section className="dashboard-panel">
