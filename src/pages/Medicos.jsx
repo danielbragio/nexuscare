@@ -2,26 +2,22 @@ import { useEffect, useMemo, useState } from "react";
 
 function normalizarTipo(tipo) {
   const texto = (tipo || "").toString().trim().toLowerCase();
-
   if (texto.includes("pronto")) return "Atendimento Imediato";
   return "Agendamento";
 }
 
 function normalizarStatus(status) {
   const texto = (status || "").toString().trim().toLowerCase();
-
   if (texto === "finalizado" || texto === "finalizada") return "finalizado";
   if (texto === "em atendimento" || texto === "em_atendimento") return "em_atendimento";
   if (texto === "agendada" || texto === "agendado") return "agendado";
-
   return texto || "agendado";
 }
 
 function labelStatus(status) {
-  const statusNormalizado = normalizarStatus(status);
-
-  if (statusNormalizado === "finalizado") return "Finalizado";
-  if (statusNormalizado === "em_atendimento") return "Em atendimento";
+  const s = normalizarStatus(status);
+  if (s === "finalizado") return "Finalizado";
+  if (s === "em_atendimento") return "Em atendimento";
   return "Agendado";
 }
 
@@ -35,6 +31,7 @@ function ordenarConsultas(lista) {
 
 export default function Medicos({
   consultas = [],
+  pagamentos = [],
   consultaSelecionadaExterna,
   limparConsultaExterna,
   onIniciarAtendimento,
@@ -64,32 +61,44 @@ export default function Medicos({
   useEffect(() => {
     if (consultaSelecionadaExterna) {
       abrirAtendimento(consultaSelecionadaExterna);
-
-      if (limparConsultaExterna) {
-        limparConsultaExterna();
-      }
+      if (limparConsultaExterna) limparConsultaExterna();
     }
   }, [consultaSelecionadaExterna]);
 
   useEffect(() => {
     function handleAbrirAtendimento(event) {
-      if (event.detail) {
-        abrirAtendimento(event.detail);
-      }
+      if (event.detail) abrirAtendimento(event.detail);
     }
-
     window.addEventListener("abrir-atendimento", handleAbrirAtendimento);
-
-    return () => {
-      window.removeEventListener("abrir-atendimento", handleAbrirAtendimento);
-    };
+    return () => window.removeEventListener("abrir-atendimento", handleAbrirAtendimento);
   }, []);
+
+  // Build a set of consulta IDs whose payment is confirmed
+  const consultasComPagamentoConfirmado = useMemo(() => {
+    const pagas = new Set();
+    pagamentos.forEach((p) => {
+      const status = (p.statusPagamento || p.status || "").toLowerCase();
+      if (status === "pago" || status === "paga") {
+        if (p.consultaId) pagas.add(p.consultaId);
+        if (p.agendamentoId) pagas.add(p.agendamentoId);
+      }
+    });
+    return pagas;
+  }, [pagamentos]);
 
   const consultasAtivas = useMemo(() => {
     return ordenarConsultas(
-      consultas.filter((item) => normalizarStatus(item.status) !== "finalizado")
+      consultas.filter((item) => {
+        if (normalizarStatus(item.status) === "finalizado") return false;
+        // Payment gate: if the consulta has a pagamentoId, only show if payment is confirmed
+        if (item.pagamentoId) {
+          return consultasComPagamentoConfirmado.has(item.id);
+        }
+        // Legacy data without pagamentoId: show always (don't break old records)
+        return true;
+      })
     );
-  }, [consultas]);
+  }, [consultas, consultasComPagamentoConfirmado]);
 
   const consultasFiltradas = useMemo(() => {
     return consultasAtivas.filter((item) =>
@@ -157,10 +166,7 @@ export default function Medicos({
 
   function handleChange(e) {
     const { name, value } = e.target;
-    setForm((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
+    setForm((prev) => ({ ...prev, [name]: value }));
   }
 
   function gerarReceitaModelo() {
@@ -174,7 +180,6 @@ export default function Medicos({
 
   function gerarAtestadoModelo() {
     if (!consultaSelecionada) return;
-
     setForm((prev) => ({
       ...prev,
       atestado: `Atesto para os devidos fins que o(a) paciente ${consultaSelecionada.paciente} necessita de afastamento de suas atividades por 02 dias, a partir desta data, por motivo de saúde.`,
@@ -184,7 +189,6 @@ export default function Medicos({
 
   async function salvarProntuario() {
     if (!consultaSelecionada || !onSalvarProntuario) return;
-
     try {
       await onSalvarProntuario(consultaSelecionada.id, form);
       alert(`Prontuário de ${consultaSelecionada.paciente} salvo com sucesso.`);
@@ -196,15 +200,11 @@ export default function Medicos({
 
   async function finalizarAtendimento() {
     if (!consultaSelecionada || !onFinalizarAtendimento) return;
-
     try {
-      const prontuarioFinal = {
+      await onFinalizarAtendimento(consultaSelecionada.id, {
         ...form,
         statusAtendimento: "Finalizado",
-      };
-
-      await onFinalizarAtendimento(consultaSelecionada.id, prontuarioFinal);
-
+      });
       setConsultaSelecionada(null);
       setAbaAtendimento("dados");
       alert("Atendimento finalizado com sucesso.");
@@ -221,7 +221,7 @@ export default function Medicos({
           <tr>
             <th>Paciente</th>
             <th>Especialidade</th>
-            <th>Médico</th>
+            <th>Profissional</th>
             <th>Data</th>
             <th>Hora</th>
             <th>Tipo</th>
@@ -240,16 +240,12 @@ export default function Medicos({
               <td>{normalizarTipo(consulta.tipoAtendimento)}</td>
               <td>{labelStatus(consulta.status)}</td>
               <td>
-                <button
-                  className="primary-btn"
-                  onClick={() => abrirAtendimento(consulta)}
-                >
+                <button className="primary-btn" onClick={() => abrirAtendimento(consulta)}>
                   Abrir atendimento
                 </button>
               </td>
             </tr>
           ))}
-
           {lista.length === 0 && (
             <tr>
               <td colSpan="8">Nenhum paciente encontrado.</td>
@@ -270,47 +266,38 @@ export default function Medicos({
             <strong>Paciente</strong>
             <div>{consultaSelecionada.paciente}</div>
           </div>
-
           <div className="muted-box">
             <strong>CPF</strong>
             <div>{consultaSelecionada.cpf || "—"}</div>
           </div>
-
           <div className="muted-box">
             <strong>Telefone</strong>
             <div>{consultaSelecionada.telefone || "—"}</div>
           </div>
-
           <div className="muted-box">
             <strong>Status</strong>
             <div>{labelStatus(consultaSelecionada.status)}</div>
           </div>
-
           <div className="muted-box">
             <strong>Especialidade</strong>
             <div>{consultaSelecionada.especialidade || "—"}</div>
           </div>
-
           <div className="muted-box">
-            <strong>Médico</strong>
+            <strong>Profissional</strong>
             <div>{consultaSelecionada.medico || "—"}</div>
           </div>
-
           <div className="muted-box">
             <strong>Data</strong>
             <div>{consultaSelecionada.data || "—"}</div>
           </div>
-
           <div className="muted-box">
             <strong>Hora</strong>
             <div>{consultaSelecionada.hora || "—"}</div>
           </div>
-
           <div className="muted-box med-full">
             <strong>Tipo de atendimento</strong>
             <div>{normalizarTipo(consultaSelecionada.tipoAtendimento)}</div>
           </div>
-
           <div className="muted-box med-full">
             <strong>Observações da recepção</strong>
             <div>{consultaSelecionada.observacoesRecepcao || "Sem observações."}</div>
@@ -335,7 +322,6 @@ export default function Medicos({
               <option value="Encaminhado">Encaminhado</option>
             </select>
           </div>
-
           <div>
             <label>CID</label>
             <input
@@ -346,7 +332,6 @@ export default function Medicos({
               placeholder="Ex.: J06.9"
             />
           </div>
-
           <div className="med-full">
             <label>Anamnese</label>
             <textarea
@@ -357,7 +342,6 @@ export default function Medicos({
               placeholder="Descreva a história clínica do paciente"
             />
           </div>
-
           <div className="med-full">
             <label>Exame físico</label>
             <textarea
@@ -368,7 +352,6 @@ export default function Medicos({
               placeholder="Descreva o exame físico"
             />
           </div>
-
           <div>
             <label>Hipótese diagnóstica</label>
             <textarea
@@ -379,7 +362,6 @@ export default function Medicos({
               placeholder="Hipótese diagnóstica"
             />
           </div>
-
           <div>
             <label>Conduta</label>
             <textarea
@@ -390,7 +372,6 @@ export default function Medicos({
               placeholder="Conduta médica"
             />
           </div>
-
           <div>
             <label>Exames solicitados</label>
             <textarea
@@ -401,7 +382,6 @@ export default function Medicos({
               placeholder="Exames solicitados"
             />
           </div>
-
           <div>
             <label>Evolução</label>
             <textarea
@@ -412,7 +392,6 @@ export default function Medicos({
               placeholder="Evolução clínica"
             />
           </div>
-
           <div className="med-full">
             <label>Observações</label>
             <textarea
@@ -423,7 +402,6 @@ export default function Medicos({
               placeholder="Observações adicionais"
             />
           </div>
-
           <div>
             <label>Orientação de retorno</label>
             <input
@@ -447,7 +425,6 @@ export default function Medicos({
               Gerar modelo
             </button>
           </div>
-
           <textarea
             className="textarea"
             name="receita"
@@ -468,7 +445,6 @@ export default function Medicos({
               Gerar modelo
             </button>
           </div>
-
           <textarea
             className="textarea"
             name="atestado"
@@ -491,15 +467,13 @@ export default function Medicos({
             <button className="med-back-btn" onClick={voltarParaLista}>
               ←
             </button>
-
             <div>
-              <h1>Médicos</h1>
+              <h1>Consulta</h1>
               <p className="page-subtitle">
                 Atendimento em andamento de {consultaSelecionada.paciente}
               </p>
             </div>
           </div>
-
           <div className="badge">{labelStatus(consultaSelecionada.status)}</div>
         </div>
 
@@ -511,21 +485,18 @@ export default function Medicos({
             >
               Dados
             </button>
-
             <button
               className={`medical-tab ${abaAtendimento === "prontoatendimento" ? "active" : ""}`}
               onClick={() => setAbaAtendimento("prontoatendimento")}
             >
-              Atendimento Imediato
+              Atendimento
             </button>
-
             <button
               className={`medical-tab ${abaAtendimento === "receita" ? "active" : ""}`}
               onClick={() => setAbaAtendimento("receita")}
             >
               Receita
             </button>
-
             <button
               className={`medical-tab ${abaAtendimento === "atestado" ? "active" : ""}`}
               onClick={() => setAbaAtendimento("atestado")}
@@ -533,7 +504,6 @@ export default function Medicos({
               Atestado
             </button>
           </div>
-
           <div style={{ marginTop: "20px" }}>{renderAbaAtendimento()}</div>
         </div>
 
@@ -541,11 +511,9 @@ export default function Medicos({
           <button className="primary-btn" onClick={salvarProntuario}>
             Salvar prontuário
           </button>
-
           <button className="secondary-btn" onClick={finalizarAtendimento}>
             Finalizar atendimento
           </button>
-
           <button className="secondary-btn" onClick={voltarParaLista}>
             Voltar
           </button>
@@ -557,9 +525,9 @@ export default function Medicos({
   return (
     <div>
       <div className="page-header">
-        <h1>Médicos</h1>
+        <h1>Consulta</h1>
         <p className="page-subtitle">
-          Atendimento médico com abas de agendados e atendimento imediato.
+          Fila de atendimento — pacientes com pagamento confirmado.
         </p>
       </div>
 
@@ -581,7 +549,6 @@ export default function Medicos({
             >
               Agendados
             </button>
-
             <button
               className={`medical-tab ${abaLista === "prontoatendimento" ? "active" : ""}`}
               onClick={() => setAbaLista("prontoatendimento")}
@@ -596,27 +563,19 @@ export default function Medicos({
 
         <div className="page-card module-medico">
           <h3>Resumo do setor</h3>
-
           <div className="muted-box" style={{ marginBottom: "12px" }}>
-            Total de consultas ativas: <strong>{consultasAtivas.length}</strong>
+            Total na fila: <strong>{consultasAtivas.length}</strong>
           </div>
-
           <div className="muted-box" style={{ marginBottom: "12px" }}>
             Agendados: <strong>{consultasAgendadas.length}</strong>
           </div>
-
           <div className="muted-box" style={{ marginBottom: "12px" }}>
             Atendimento imediato: <strong>{consultasProntoAtendimento.length}</strong>
           </div>
-
           <div className="muted-box">
             Em atendimento:{" "}
             <strong>
-              {
-                consultasAtivas.filter(
-                  (c) => normalizarStatus(c.status) === "em_atendimento"
-                ).length
-              }
+              {consultasAtivas.filter((c) => normalizarStatus(c.status) === "em_atendimento").length}
             </strong>
           </div>
         </div>

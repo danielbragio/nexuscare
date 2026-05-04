@@ -14,7 +14,6 @@ import {
   BarChart2,
   BookOpen,
   Settings,
-  Video,
 } from "lucide-react";
 import {
   createUserWithEmailAndPassword,
@@ -56,7 +55,6 @@ import Normas from "./pages/Normas";
 import Prontuario from "./pages/Prontuario";
 import Estoque from "./pages/Estoque";
 import Relatorios from "./pages/Relatorios";
-import Telemedicina from "./pages/Telemedicina";
 
 function FirebaseLoginScreen() {
   const [usuario, setUsuario] = useState("");
@@ -555,6 +553,14 @@ export default function App() {
     }
   }
 
+  async function liberarConsultorioDeUsuario(usuarioId) {
+    try {
+      await deleteDoc(doc(db, "consultorios", usuarioId));
+    } catch (error) {
+      console.error("Erro ao liberar consultório do usuário:", error);
+    }
+  }
+
   async function adicionarPaciente(novoPaciente) {
     await addDoc(collection(db, "patients"), {
       ...novoPaciente,
@@ -563,12 +569,13 @@ export default function App() {
   }
 
   async function adicionarConsulta(novaConsulta) {
-    await addDoc(collection(db, "appointments"), {
+    const docRef = await addDoc(collection(db, "appointments"), {
       ...novaConsulta,
       status: "agendado",
       prontuario: null,
       createdAt: serverTimestamp(),
     });
+    return docRef;
   }
 
   async function iniciarAtendimento(id) {
@@ -629,7 +636,6 @@ export default function App() {
       "normas",
       "estoque",
       "relatorios",
-      "telemedicina",
     ];
 
     return orderedViews.find((item) => hasPermission(userData, item)) || "dashboard";
@@ -674,7 +680,7 @@ export default function App() {
         return (
           <Agendamentos
             consultas={consultas}
-            users={users}
+            agendamentosOdonto={[...atendimentosOdonto]}
             onAbrirAtendimento={(consulta) => {
               setConsultaSelecionadaExterna(consulta);
               setView("medicos");
@@ -686,6 +692,7 @@ export default function App() {
         return (
           <Medicos
             consultas={consultas}
+            pagamentos={pagamentos}
             consultaSelecionadaExterna={consultaSelecionadaExterna}
             limparConsultaExterna={() => setConsultaSelecionadaExterna(null)}
             consultorioAtual={consultorioAtual}
@@ -725,9 +732,11 @@ export default function App() {
         return (
           <Administracao
             users={users}
+            consultorios={consultorios}
             onCriarUsuario={criarUsuario}
             onAtualizarUsuario={atualizarUsuario}
             onExcluirUsuario={excluirUsuario}
+            onLiberarConsultorio={liberarConsultorioDeUsuario}
           />
         );
 
@@ -749,9 +758,6 @@ export default function App() {
             users={users}
           />
         );
-
-      case "telemedicina":
-        return <Telemedicina />;
 
       default:
         return (
@@ -783,7 +789,6 @@ export default function App() {
     relatorios: BarChart2,
     normas: BookOpen,
     administracao: Settings,
-    telemedicina: Video,
   };
 
   function menu(label, value) {
@@ -894,7 +899,7 @@ export default function App() {
 
           {menuAberto.assistencial && (
             <div className="menu-group">
-              {menu("Médicos", "medicos")}
+              {menu("Consulta", "medicos")}
               {menu("Enfermagem", "enfermagem")}
               {menu("Odonto", "odonto")}
             </div>
@@ -915,7 +920,6 @@ export default function App() {
               {menu("Relatórios", "relatorios")}
               {menu("Normas", "normas")}
               {menu("Administração", "administracao")}
-              {menu("Telemedicina", "telemedicina")}
             </div>
           )}
         </div>
@@ -956,11 +960,9 @@ export default function App() {
                 : view === "agendamentos"
                 ? "Agendamentos"
                 : view === "medicos"
-                ? "Médicos"
+                ? "Consulta"
                 : view === "faturamento"
                 ? "Faturamento"
-                : view === "telemedicina"
-                ? "Telemedicina"
                 : view === "normas"
                 ? "Normas"
                 : view === "estoque"

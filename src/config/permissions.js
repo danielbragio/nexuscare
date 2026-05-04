@@ -3,7 +3,7 @@ export const allModules = [
   { key: "pacientes", label: "Pacientes" },
   { key: "pagamentos", label: "Pagamentos" },
   { key: "agendamentos", label: "Agendamentos" },
-  { key: "medicos", label: "Médicos" },
+  { key: "medicos", label: "Consulta" },
   { key: "enfermagem", label: "Enfermagem" },
   { key: "odonto", label: "Odonto" },
   { key: "faturamento", label: "Faturamento" },
@@ -13,7 +13,6 @@ export const allModules = [
   { key: "prontuario", label: "Prontuário" },
   { key: "estoque", label: "Estoque" },
   { key: "relatorios", label: "Relatórios" },
-  { key: "telemedicina", label: "Telemedicina" },
 ];
 
 export const rolePermissions = {
@@ -24,7 +23,6 @@ export const rolePermissions = {
   odonto: ["dashboard", "odonto", "prontuario"],
   financeiro: ["dashboard", "pagamentos", "financeiro", "faturamento", "relatorios"],
   estoque: ["dashboard", "estoque"],
-  telemedicina: ["dashboard", "telemedicina"],
 };
 
 export function getAllowedViews(userData) {

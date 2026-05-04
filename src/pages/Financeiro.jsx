@@ -1024,12 +1024,47 @@ export default function Financeiro() {
                 <div className="patients-form-grid" style={{ marginTop: "16px" }}>
                   <div>
                     <label>Fornecedor</label>
-                    <input
-                      className="input"
-                      value={novaConta.fornecedor}
-                      onChange={(e) => alterarConta("fornecedor", e.target.value)}
-                      placeholder="Nome do fornecedor"
-                    />
+                    {fornecedores.length > 0 ? (
+                      <select
+                        className="select"
+                        value={novaConta.fornecedor}
+                        onChange={(e) => {
+                          const nomeSelecionado = e.target.value;
+                          const forn = fornecedores.find((f) => f.nome === nomeSelecionado);
+                          if (forn) {
+                            setNovaConta((prev) => ({
+                              ...prev,
+                              fornecedor: forn.nome || "",
+                              cnpjFornecedor: forn.cnpj || "",
+                              categoria: forn.categoria || prev.categoria,
+                            }));
+                          } else {
+                            alterarConta("fornecedor", nomeSelecionado);
+                          }
+                        }}
+                      >
+                        <option value="">Selecione o fornecedor</option>
+                        {fornecedores.map((f) => (
+                          <option key={f.id} value={f.nome}>{f.nome}</option>
+                        ))}
+                        <option value="__outro__">Outro (digitar manualmente)</option>
+                      </select>
+                    ) : (
+                      <input
+                        className="input"
+                        value={novaConta.fornecedor}
+                        onChange={(e) => alterarConta("fornecedor", e.target.value)}
+                        placeholder="Nome do fornecedor"
+                      />
+                    )}
+                    {novaConta.fornecedor === "__outro__" && (
+                      <input
+                        className="input"
+                        style={{ marginTop: "6px" }}
+                        onChange={(e) => alterarConta("fornecedor", e.target.value)}
+                        placeholder="Digite o nome do fornecedor"
+                      />
+                    )}
                   </div>
 
                   <div>

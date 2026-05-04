@@ -16,11 +16,51 @@ const DIAS_ATENDIMENTO = [
   "sábado",
 ];
 
+const ESPECIALIDADES_MEDICO = [
+  "Clínico Geral",
+  "Cardiologia",
+  "Dermatologia",
+  "Endocrinologia",
+  "Gastroenterologia",
+  "Geriatria",
+  "Ginecologia e Obstetrícia",
+  "Neurologia",
+  "Oftalmologia",
+  "Ortopedia e Traumatologia",
+  "Otorrinolaringologia",
+  "Pediatria",
+  "Psiquiatria",
+  "Reumatologia",
+  "Urologia",
+  "Medicina de Família e Comunidade",
+  "Medicina do Trabalho",
+  "Medicina de Emergência",
+  "Infectologia",
+  "Oncologia",
+  "Pneumologia",
+  "Cirurgia Geral",
+];
+
+const ESPECIALIDADES_ODONTO = [
+  "Clínico Geral",
+  "Ortodontia",
+  "Endodontia",
+  "Periodontia",
+  "Implantodontia",
+  "Cirurgia Bucomaxilofacial",
+  "Odontopediatria",
+  "Prótese Dentária",
+  "Dentística",
+  "Radiologia Odontológica",
+];
+
 export default function Administracao({
   users = [],
+  consultorios = [],
   onCriarUsuario,
   onAtualizarUsuario,
   onExcluirUsuario,
+  onLiberarConsultorio,
 }) {
   const [abaAtiva, setAbaAtiva] = useState("usuarios");
   const [busca, setBusca] = useState("");
@@ -621,7 +661,6 @@ export default function Administracao({
                       <option value="odonto">Odonto</option>
                       <option value="financeiro">Financeiro</option>
                       <option value="estoque">Estoque</option>
-                      <option value="telemedicina">Telemedicina</option>
                     </select>
                   </div>
 
@@ -640,31 +679,34 @@ export default function Administracao({
 
                   {form.role === "medico" && (
                     <div>
-                      <label>Especialidade do médico</label>
+                      <label>Especialidade médica</label>
                       <select
                         className="select"
                         name="especialidade"
                         value={form.especialidade}
                         onChange={handleChange}
                       >
-                        <option value="">Selecione</option>
-                        <option value="Clínico">Clínico</option>
-                        <option value="Odontologia">Odontologia</option>
+                        <option value="">Selecione a especialidade</option>
+                        {ESPECIALIDADES_MEDICO.map((esp) => (
+                          <option key={esp} value={esp}>{esp}</option>
+                        ))}
                       </select>
                     </div>
                   )}
 
                   {form.role === "odonto" && (
                     <div>
-                      <label>Especialidade</label>
+                      <label>Especialidade odontológica</label>
                       <select
                         className="select"
                         name="especialidade"
                         value={form.especialidade}
                         onChange={handleChange}
                       >
-                        <option value="">Selecione</option>
-                        <option value="Odontologia">Odontologia</option>
+                        <option value="">Selecione a especialidade</option>
+                        {ESPECIALIDADES_ODONTO.map((esp) => (
+                          <option key={esp} value={esp}>{esp}</option>
+                        ))}
                       </select>
                     </div>
                   )}
@@ -1026,6 +1068,7 @@ export default function Administracao({
                     <th>Perfil</th>
                     <th>Registro</th>
                     <th>Status</th>
+                    <th>Sala ativa</th>
                     <th>Agenda</th>
                     <th>Módulos</th>
                     <th>Ações</th>
@@ -1046,6 +1089,18 @@ export default function Administracao({
                             : "-"}
                       </td>
                       <td>{usuario.ativo === false ? "Inativo" : "Ativo"}</td>
+                      <td>
+                        {(() => {
+                          const sala = consultorios.find((c) => c.medicoId === usuario.id);
+                          return sala ? (
+                            <span style={{ color: "#16a34a", fontWeight: 700, fontSize: "12px" }}>
+                              {sala.nome}
+                            </span>
+                          ) : (
+                            <span style={{ color: "#94a3b8", fontSize: "12px" }}>—</span>
+                          );
+                        })()}
+                      </td>
                       <td>
                         {Array.isArray(usuario.diasAtendimento) &&
                         usuario.diasAtendimento.length > 0
@@ -1080,6 +1135,21 @@ export default function Administracao({
                             Senha
                           </button>
 
+                          {consultorios.some((c) => c.medicoId === usuario.id) && onLiberarConsultorio && (
+                            <button
+                              className="secondary-btn"
+                              style={{ borderColor: "#f59e0b", color: "#92400e", background: "#fffbeb" }}
+                              onClick={() => {
+                                const sala = consultorios.find((c) => c.medicoId === usuario.id);
+                                if (window.confirm(`Liberar ${sala?.nome || "consultório"} de ${usuario.nome}?`)) {
+                                  onLiberarConsultorio(usuario.id);
+                                }
+                              }}
+                            >
+                              Liberar sala
+                            </button>
+                          )}
+
                           <button
                             className="danger-btn"
                             onClick={() => excluirUsuario(usuario)}
@@ -1093,7 +1163,7 @@ export default function Administracao({
 
                   {usuariosFiltrados.length === 0 && (
                     <tr>
-                      <td colSpan="9">Nenhum usuário encontrado.</td>
+                      <td colSpan="10">Nenhum usuário encontrado.</td>
                     </tr>
                   )}
                 </tbody>

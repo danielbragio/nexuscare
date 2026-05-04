@@ -376,6 +376,8 @@ export default function Pacientes({
 
   const [destinoAtendimento, setDestinoAtendimento] = useState("medico");
   const [procedimentosSelecionadosOdonto, setProcedimentosSelecionadosOdonto] = useState([]);
+  const [buscaProcedimentos, setBuscaProcedimentos] = useState("");
+  const [mostrarProcedimentos, setMostrarProcedimentos] = useState(false);
   const [profissionaisOdonto, setProfissionaisOdonto] = useState([]);
   const [carregandoProfissionaisOdonto, setCarregandoProfissionaisOdonto] = useState(false);
   const [profissionalOdontoId, setProfissionalOdontoId] = useState("");
@@ -394,6 +396,7 @@ export default function Pacientes({
     hora: "",
     observacoesRecepcao: "",
     tipoAtendimento: "Agendamento",
+    valorConsulta: "",
   });
 
   const isAdmin = userData?.role === "admin";
@@ -617,9 +620,12 @@ export default function Pacientes({
       hora: "",
       observacoesRecepcao: "",
       tipoAtendimento: "Agendamento",
+      valorConsulta: "",
     });
     setDestinoAtendimento("medico");
     setProcedimentosSelecionadosOdonto([]);
+    setBuscaProcedimentos("");
+    setMostrarProcedimentos(false);
     setProfissionaisDisponiveis([]);
     setHorariosDisponiveis([]);
     setProfissionalOdontoId("");
@@ -774,7 +780,7 @@ export default function Pacientes({
 
     try {
       setSalvandoConsulta(true);
-      await onAdicionarConsulta({
+      const docRef = await onAdicionarConsulta({
         paciente: agendamento.nomePaciente,
         nomePaciente: agendamento.nomePaciente,
         cpf: agendamento.cpf,
@@ -796,10 +802,40 @@ export default function Pacientes({
         chegouHoje: agendamento.tipoAtendimento === "Atendimento Imediato",
         fichaAberta: agendamento.tipoAtendimento === "Atendimento Imediato",
         tempoEsperaMinutos: 0,
+        pagamentoId: "",
       });
 
+      // Create linked payment for medical appointment
+      if (docRef?.id) {
+        const valorConsulta = Number(agendamento.valorConsulta || 0);
+        const pagRef = await addDoc(collection(db, "pagamentos"), {
+          paciente: agendamento.nomePaciente,
+          nomePaciente: agendamento.nomePaciente,
+          cpf: agendamento.cpf,
+          telefone: agendamento.telefone,
+          profissional: agendamento.medico,
+          especialidade: agendamento.especialidade,
+          descricao: `Consulta — ${agendamento.especialidade}`,
+          servico: "Consulta Médica",
+          valor: valorConsulta,
+          status: "pendente",
+          statusPagamento: "Pendente",
+          formaPagamento: "",
+          tipo: "consulta",
+          origem: "medico",
+          consultaId: docRef.id,
+          agendamentoId: docRef.id,
+          data: agendamento.data,
+          dataPagamento: "",
+          createdAt: serverTimestamp(),
+        });
+        await updateDoc(doc(db, "appointments", docRef.id), {
+          pagamentoId: pagRef.id,
+        });
+      }
+
       limparAgendamento();
-      alert("Atendimento registrado com sucesso.");
+      alert("Atendimento registrado com sucesso.\nPagamento pendente criado no módulo Pagamentos.");
     } catch (error) {
       console.error("Erro ao registrar atendimento:", error);
       alert("Não foi possível registrar o atendimento.");
@@ -1507,38 +1543,92 @@ export default function Pacientes({
 
                     {destinoAtendimento === "odonto" && (
                       <div className="patients-full-width">
-                        <label>Procedimentos odontológicos (opcional)</label>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "8px" }}>
-                          {procedimentosOdonto
-                            .filter((p) => p.status === "ativo")
-                            .map((proc) => {
-                              const sel = procedimentosSelecionadosOdonto.some((p) => p.id === proc.id);
-                              return (
-                                <button
-                                  key={proc.id}
-                                  type="button"
-                                  onClick={() => {
-                                    if (sel) {
-                                      setProcedimentosSelecionadosOdonto((prev) =>
-                                        prev.filter((p) => p.id !== proc.id)
-                                      );
-                                    } else {
-                                      setProcedimentosSelecionadosOdonto((prev) => [...prev, proc]);
-                                    }
-                                  }}
-                                  style={{
-                                    padding: "6px 12px", fontSize: "12px", borderRadius: "8px",
-                                    border: "1px solid", cursor: "pointer", fontWeight: 600,
-                                    borderColor: sel ? "#0f766e" : "#cbd5e1",
-                                    background: sel ? "#0f766e" : "#fff",
-                                    color: sel ? "#fff" : "#334155",
-                                  }}
-                                >
-                                  {proc.nome} — {Number(proc.valor || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
-                                </button>
-                              );
-                            })}
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
+                          <label style={{ marginBottom: 0 }}>
+                            Procedimentos odontológicos{procedimentosSelecionadosOdonto.length > 0 ? ` (${procedimentosSelecionadosOdonto.length} selecionados)` : " (opcional)"}
+                          </label>
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            style={{ fontSize: "12px", padding: "4px 12px" }}
+                            onClick={() => setMostrarProcedimentos((prev) => !prev)}
+                          >
+                            {mostrarProcedimentos ? "Recolher" : "Selecionar procedimentos"}
+                          </button>
                         </div>
+
+                        {procedimentosSelecionadosOdonto.length > 0 && (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "8px" }}>
+                            {procedimentosSelecionadosOdonto.map((p) => (
+                              <span
+                                key={p.id}
+                                style={{
+                                  display: "inline-flex", alignItems: "center", gap: "6px",
+                                  padding: "4px 10px", borderRadius: "8px", fontSize: "12px",
+                                  background: "#0f766e", color: "#fff", fontWeight: 600,
+                                }}
+                              >
+                                {p.nome}
+                                <button
+                                  type="button"
+                                  onClick={() => setProcedimentosSelecionadosOdonto((prev) => prev.filter((x) => x.id !== p.id))}
+                                  style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontWeight: 700, lineHeight: 1 }}
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {mostrarProcedimentos && (
+                          <div style={{ border: "1px solid #e2e8f0", borderRadius: "10px", padding: "12px", background: "#f8fafc" }}>
+                            <input
+                              className="input"
+                              placeholder="Buscar procedimento..."
+                              value={buscaProcedimentos}
+                              onChange={(e) => setBuscaProcedimentos(e.target.value)}
+                              style={{ marginBottom: "10px" }}
+                            />
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", maxHeight: "180px", overflowY: "auto" }}>
+                              {procedimentosOdonto
+                                .filter((p) => p.status === "ativo")
+                                .filter((p) =>
+                                  !buscaProcedimentos ||
+                                  (p.nome || "").toLowerCase().includes(buscaProcedimentos.toLowerCase())
+                                )
+                                .map((proc) => {
+                                  const sel = procedimentosSelecionadosOdonto.some((p) => p.id === proc.id);
+                                  return (
+                                    <button
+                                      key={proc.id}
+                                      type="button"
+                                      onClick={() => {
+                                        if (sel) {
+                                          setProcedimentosSelecionadosOdonto((prev) => prev.filter((p) => p.id !== proc.id));
+                                        } else {
+                                          setProcedimentosSelecionadosOdonto((prev) => [...prev, proc]);
+                                        }
+                                      }}
+                                      style={{
+                                        padding: "6px 12px", fontSize: "12px", borderRadius: "8px",
+                                        border: "1px solid", cursor: "pointer", fontWeight: 600,
+                                        borderColor: sel ? "#0f766e" : "#cbd5e1",
+                                        background: sel ? "#0f766e" : "#fff",
+                                        color: sel ? "#fff" : "#334155",
+                                      }}
+                                    >
+                                      {proc.nome} — {Number(proc.valor || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+                                    </button>
+                                  );
+                                })}
+                              {procedimentosOdonto.filter((p) => p.status === "ativo").length === 0 && (
+                                <div style={{ fontSize: "12px", color: "#94a3b8" }}>Nenhum procedimento cadastrado.</div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
                         {procedimentosSelecionadosOdonto.length > 0 && (
                           <div style={{ marginTop: "8px", fontSize: "13px", color: "#0f766e", fontWeight: 700 }}>
                             Total estimado:{" "}
@@ -1673,6 +1763,22 @@ export default function Pacientes({
                           </select>
                         </div>
                       </>
+                    )}
+
+                    {destinoAtendimento === "medico" && (
+                      <div>
+                        <label>Valor da consulta (R$)</label>
+                        <input
+                          className="input"
+                          type="number"
+                          name="valorConsulta"
+                          value={agendamento.valorConsulta}
+                          onChange={handleAgendamentoChange}
+                          placeholder="0,00"
+                          min="0"
+                          step="0.01"
+                        />
+                      </div>
                     )}
 
                     <div className="patients-full-width">
