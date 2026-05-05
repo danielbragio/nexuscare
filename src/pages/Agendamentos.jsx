@@ -86,6 +86,16 @@ export default function Agendamentos({
   const [busca, setBusca] = useState("");
   const [filtroTipo, setFiltroTipo] = useState("todos");
 
+  const role = userData?.role || "";
+  const podeVerTodos =
+    role === "admin" ||
+    role === "recepcao" ||
+    role === "financeiro" ||
+    role === "estoque" ||
+    role === "enfermagem" ||
+    (Array.isArray(userData?.permissions) && userData.permissions.includes("administracao"));
+  const isMedico = !podeVerTodos;
+
   const identificadoresUsuario = useMemo(() => {
     return [
       userData?.nome,

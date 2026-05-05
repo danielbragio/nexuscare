@@ -414,7 +414,7 @@ export default function App() {
 
     const qConsultas = podeVerTodos
       ? query(collection(db, "appointments"), orderBy("createdAt", "desc"))
-      : query(collection(db, "appointments"), where("profissionalId", "==", uid), orderBy("createdAt", "desc"));
+      : query(collection(db, "appointments"), where("profissionalId", "==", uid));
 
     const qPagamentos = query(collection(db, "pagamentos"), orderBy("createdAt", "desc"));
     const qConsultorios = query(collection(db, "consultorios"), orderBy("numero", "asc"));
@@ -422,14 +422,16 @@ export default function App() {
 
     const qAtendimentosOdonto = podeVerTodos
       ? query(collection(db, "atendimentosOdonto"), orderBy("createdAt", "desc"))
-      : query(collection(db, "atendimentosOdonto"), where("profissionalId", "==", uid), orderBy("createdAt", "desc"));
+      : query(collection(db, "atendimentosOdonto"), where("profissionalId", "==", uid));
 
     const unsubPacientes = onSnapshot(qPacientes, (snapshot) => {
       setPacientes(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
     });
 
     const unsubConsultas = onSnapshot(qConsultas, (snapshot) => {
-      setConsultas(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
+      const docs = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+      if (!podeVerTodos) docs.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+      setConsultas(docs);
       setDataLoading(false);
     }, (err) => { console.error("appointments:", err); setConsultas([]); setDataLoading(false); });
 
@@ -454,7 +456,11 @@ export default function App() {
 
     const unsubAtendimentosOdonto = onSnapshot(
       qAtendimentosOdonto,
-      (snap) => setAtendimentosOdonto(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      (snap) => {
+        const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        if (!podeVerTodos) docs.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+        setAtendimentosOdonto(docs);
+      },
       (err) => { console.error("atendimentosOdonto:", err); setAtendimentosOdonto([]); }
     );
 

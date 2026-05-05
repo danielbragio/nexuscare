@@ -1,14 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addDoc,
   collection,
   deleteDoc,
   doc,
   getDocs,
-  query,
   serverTimestamp,
   updateDoc,
-  where,
 } from "firebase/firestore";
 import {
   EmailAuthProvider,
@@ -358,6 +356,174 @@ function consultaOcupaHorario(consulta) {
   ].includes(status);
 }
 
+// ── Searchable specialty combobox ────────────────────────────────────────────
+function EspecialidadeCombobox({ value, onChange }) {
+  const [busca, setBusca] = useState("");
+  const [aberto, setAberto] = useState(false);
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    function fechar(e) {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setAberto(false);
+        setBusca("");
+      }
+    }
+    document.addEventListener("mousedown", fechar);
+    return () => document.removeEventListener("mousedown", fechar);
+  }, []);
+
+  const buscaNorm = normalizarTexto(busca);
+
+  const medicosFiltrados = ESPECIALIDADES_MEDICO.filter(
+    (esp) => !buscaNorm || normalizarTexto(esp).includes(buscaNorm)
+  );
+  const odontoFiltradas = ESPECIALIDADES_ODONTO.filter(
+    (esp) =>
+      ESPECIALIDADES_ODONTO_EXCLUSIVAS.has(esp) &&
+      (!buscaNorm || normalizarTexto(esp).includes(buscaNorm))
+  );
+
+  const semResultados = medicosFiltrados.length === 0 && odontoFiltradas.length === 0;
+
+  function selecionar(esp) {
+    onChange(esp);
+    setBusca("");
+    setAberto(false);
+  }
+
+  function limpar(e) {
+    e.stopPropagation();
+    onChange("");
+    setBusca("");
+    setAberto(false);
+  }
+
+  const itemStyle = (sel) => ({
+    padding: "9px 16px",
+    fontSize: "14px",
+    cursor: "pointer",
+    background: sel ? "#eff6ff" : "#fff",
+    color: sel ? "#2563eb" : "#1e293b",
+    fontWeight: sel ? 600 : 400,
+    transition: "background 0.1s",
+  });
+
+  const groupHeaderStyle = {
+    padding: "7px 12px 4px",
+    fontSize: "11px",
+    fontWeight: 700,
+    color: "#64748b",
+    background: "#f8fafc",
+    textTransform: "uppercase",
+    letterSpacing: "0.06em",
+    borderTop: "1px solid #f1f5f9",
+  };
+
+  return (
+    <div ref={containerRef} style={{ position: "relative" }}>
+      <div
+        className="select"
+        style={{
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          userSelect: "none",
+        }}
+        onClick={() => setAberto((prev) => !prev)}
+      >
+        <span style={{ color: value ? "inherit" : "#94a3b8" }}>
+          {value || "Selecione a especialidade"}
+        </span>
+        <span style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+          {value && (
+            <span
+              onClick={limpar}
+              style={{ color: "#94a3b8", fontSize: "14px", lineHeight: 1, fontWeight: 700, cursor: "pointer" }}
+              title="Limpar"
+            >
+              ×
+            </span>
+          )}
+          <span style={{ fontSize: "10px", color: "#94a3b8" }}>{aberto ? "▲" : "▼"}</span>
+        </span>
+      </div>
+
+      {aberto && (
+        <div
+          style={{
+            position: "absolute",
+            zIndex: 1050,
+            top: "calc(100% + 4px)",
+            left: 0,
+            right: 0,
+            background: "#fff",
+            border: "1px solid #e2e8f0",
+            borderRadius: "8px",
+            boxShadow: "0 8px 28px rgba(0,0,0,0.13)",
+            overflow: "hidden",
+          }}
+        >
+          <div style={{ padding: "8px", borderBottom: "1px solid #f1f5f9" }}>
+            <input
+              autoFocus
+              className="input"
+              placeholder="Buscar especialidade..."
+              value={busca}
+              onChange={(e) => setBusca(e.target.value)}
+              style={{ margin: 0 }}
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>
+
+          <div style={{ maxHeight: "260px", overflowY: "auto" }}>
+            {semResultados && (
+              <div style={{ padding: "16px", textAlign: "center", fontSize: "13px", color: "#94a3b8" }}>
+                Nenhuma especialidade encontrada
+              </div>
+            )}
+
+            {medicosFiltrados.length > 0 && (
+              <>
+                <div style={{ ...groupHeaderStyle, borderTop: "none" }}>🏥 Medicina</div>
+                {medicosFiltrados.map((esp) => (
+                  <div
+                    key={`med-${esp}`}
+                    style={itemStyle(value === esp)}
+                    onMouseEnter={(e) => { if (value !== esp) e.currentTarget.style.background = "#f8fafc"; }}
+                    onMouseLeave={(e) => { if (value !== esp) e.currentTarget.style.background = "#fff"; }}
+                    onClick={() => selecionar(esp)}
+                  >
+                    {esp}
+                  </div>
+                ))}
+              </>
+            )}
+
+            {odontoFiltradas.length > 0 && (
+              <>
+                <div style={groupHeaderStyle}>🦷 Odontologia</div>
+                {odontoFiltradas.map((esp) => (
+                  <div
+                    key={`odo-${esp}`}
+                    style={itemStyle(value === esp)}
+                    onMouseEnter={(e) => { if (value !== esp) e.currentTarget.style.background = "#f8fafc"; }}
+                    onMouseLeave={(e) => { if (value !== esp) e.currentTarget.style.background = "#fff"; }}
+                    onClick={() => selecionar(esp)}
+                  >
+                    {esp}
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Pacientes({
   pacientes = [],
   consultas = [],
@@ -438,8 +604,10 @@ export default function Pacientes({
   async function carregarProfissionaisOdonto(espFiltro = "") {
     try {
       setCarregandoProfissionaisOdonto(true);
-      const snap = await getDocs(query(collection(db, "users"), where("ativo", "==", true)));
-      const todos = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const snap = await getDocs(collection(db, "users"));
+      const todos = snap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .filter((u) => u.ativo !== false);
       const odonto = todos.filter(profissionalEhOdontologico);
       if (espFiltro) {
         const norm = normalizarTexto(espFiltro);
@@ -479,11 +647,12 @@ export default function Pacientes({
 
       const diaSemana = obterDiaSemana(dataSelecionada);
 
-      const usersSnap = await getDocs(query(collection(db, "users"), where("ativo", "==", true)));
-      const profissionais = usersSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const usersSnap = await getDocs(collection(db, "users"));
+      const profissionais = usersSnap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .filter((u) => u.ativo !== false);
 
       const disponiveis = profissionais
-        .filter((profissional) => profissional.ativo === true)
         .filter(profissionalEhAssistencial)
         .filter((profissional) => profissionalTemEspecialidade(profissional, espFiltro))
         .filter((profissional) => possuiAgendaNoDia(profissional, diaSemana))
@@ -713,6 +882,10 @@ export default function Pacientes({
     if (destinoAtendimento === "odonto") {
       if (!agendamento.nomePaciente.trim()) {
         alert("Informe o nome do paciente.");
+        return;
+      }
+      if (!profissionalOdontoId) {
+        alert("Selecione o profissional odontológico antes de encaminhar.");
         return;
       }
       try {
@@ -1577,29 +1750,10 @@ export default function Pacientes({
 
                     <div className="patients-full-width">
                       <label>Especialidade do atendimento</label>
-                      <select
-                        className="select"
+                      <EspecialidadeCombobox
                         value={especialidadeSelecionada}
-                        onChange={(e) => handleEspecialidadeChange(e.target.value)}
-                      >
-                        <option value="">Selecione a especialidade</option>
-                        <optgroup label="🏥 Medicina">
-                          {ESPECIALIDADES_MEDICO.map((esp) => (
-                            <option key={`med-${esp}`} value={esp}>
-                              {esp}
-                            </option>
-                          ))}
-                        </optgroup>
-                        <optgroup label="🦷 Odontologia">
-                          {ESPECIALIDADES_ODONTO.filter(
-                            (esp) => ESPECIALIDADES_ODONTO_EXCLUSIVAS.has(esp)
-                          ).map((esp) => (
-                            <option key={`odo-${esp}`} value={esp}>
-                              {esp}
-                            </option>
-                          ))}
-                        </optgroup>
-                      </select>
+                        onChange={handleEspecialidadeChange}
+                      />
                     </div>
 
                     {destinoAtendimento === "odonto" && (
