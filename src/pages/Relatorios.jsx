@@ -8,6 +8,8 @@ import {
   DollarSign,
   CheckCircle,
   BarChart2,
+  TrendingUp,
+  AlertCircle,
 } from "lucide-react";
 
 // ── helpers ────────────────────────────────────────────────────────────────────
@@ -230,31 +232,6 @@ function gerarPDFFinanceiro({ pagamentos, receita, pendente, labelPeriodo }) {
   doc.save("relatorio-financeiro.pdf");
 }
 
-// ── Sub-componentes ────────────────────────────────────────────────────────────
-
-function KpiCard({ icon: Icon, label, value, sub, cor }) {
-  return (
-    <div className="rel-kpi">
-      <div className="rel-kpi-icon" style={{ background: cor + "18", color: cor }}>
-        <Icon size={20} />
-      </div>
-      <div>
-        <div className="rel-kpi-label">{label}</div>
-        <div className="rel-kpi-value">{value}</div>
-        {sub && <div className="rel-kpi-sub">{sub}</div>}
-      </div>
-    </div>
-  );
-}
-
-function FiltroBtn({ ativo, onClick, children }) {
-  return (
-    <button className={`rel-filtro-btn ${ativo ? "active" : ""}`} onClick={onClick}>
-      {children}
-    </button>
-  );
-}
-
 // ── Componente principal ───────────────────────────────────────────────────────
 
 export default function Relatorios({
@@ -289,7 +266,6 @@ export default function Relatorios({
         dataFimEfetiva: new Date(dataFim + "T23:59:59"),
       };
     }
-    // padrão: 30 dias
     const i = new Date(fim);
     i.setDate(i.getDate() - 30);
     i.setHours(0, 0, 0, 0);
@@ -374,136 +350,624 @@ export default function Relatorios({
       .sort((a, b) => b.total - a.total);
   }, [consultasFiltradas]);
 
+  // ── render ──────────────────────────────────────────────────────────────────
+
+  const taxaComparecimento = pct(realizadas, consultasFiltradas.length);
+  const pendentesCount = Math.max(0, consultasFiltradas.length - realizadas - canceladas);
+
   return (
-    <div className="rel-page">
+    <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
 
-      {/* Filtro */}
-      <div className="page-card rel-filtro-card">
-        <div className="rel-filtro-row">
-          <div className="rel-filtro-group">
-            <FiltroBtn ativo={periodo === "hoje"} onClick={() => setPeriodo("hoje")}>Hoje</FiltroBtn>
-            <FiltroBtn ativo={periodo === "7"} onClick={() => setPeriodo("7")}>7 dias</FiltroBtn>
-            <FiltroBtn ativo={periodo === "30"} onClick={() => setPeriodo("30")}>30 dias</FiltroBtn>
-            <FiltroBtn ativo={periodo === "personalizado"} onClick={() => setPeriodo("personalizado")}>
-              Personalizado
-            </FiltroBtn>
+      {/* ── Barra de filtro ── */}
+      <div
+        style={{
+          background: "#fff",
+          border: "1px solid #e2e8f0",
+          borderRadius: "12px",
+          padding: "14px 20px",
+          display: "flex",
+          alignItems: "center",
+          gap: "16px",
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#64748b", fontWeight: 600 }}>
+          <Clock size={14} />
+          Período:
+        </div>
+
+        <div style={{ display: "flex", gap: "4px" }}>
+          {[
+            { key: "hoje", label: "Hoje" },
+            { key: "7", label: "7 dias" },
+            { key: "30", label: "30 dias" },
+            { key: "personalizado", label: "Personalizado" },
+          ].map((p) => (
+            <button
+              key={p.key}
+              onClick={() => setPeriodo(p.key)}
+              style={{
+                padding: "5px 14px",
+                borderRadius: "20px",
+                border: "1px solid",
+                fontSize: "12px",
+                fontWeight: 600,
+                cursor: "pointer",
+                background: periodo === p.key ? "#0f766e" : "transparent",
+                color: periodo === p.key ? "#fff" : "#64748b",
+                borderColor: periodo === p.key ? "#0f766e" : "#e2e8f0",
+              }}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        {periodo === "personalizado" && (
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <input
+              className="input"
+              type="date"
+              value={dataInicio}
+              onChange={(e) => setDataInicio(e.target.value)}
+              style={{ width: "130px" }}
+            />
+            <span style={{ color: "#94a3b8", fontSize: "12px" }}>até</span>
+            <input
+              className="input"
+              type="date"
+              value={dataFim}
+              onChange={(e) => setDataFim(e.target.value)}
+              style={{ width: "130px" }}
+            />
           </div>
+        )}
 
-          {periodo === "personalizado" && (
-            <div className="rel-filtro-datas">
-              <input className="input" type="date" value={dataInicio} onChange={(e) => setDataInicio(e.target.value)} />
-              <span style={{ color: "#64748b", fontWeight: 600, fontSize: "13px" }}>até</span>
-              <input className="input" type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} />
-            </div>
-          )}
-
-          <div className="rel-filtro-label">
-            <Clock size={14} /> Período: <strong>{labelPeriodo}</strong>
-          </div>
+        <div
+          style={{
+            marginLeft: "auto",
+            fontSize: "12px",
+            color: "#475569",
+            background: "#f8fafc",
+            border: "1px solid #e2e8f0",
+            borderRadius: "20px",
+            padding: "4px 12px",
+            fontWeight: 500,
+          }}
+        >
+          {labelPeriodo}
         </div>
       </div>
 
-      {/* KPIs globais */}
-      <div className="rel-kpis-grid">
-        <KpiCard icon={Users} label="Total de pacientes" value={pacientes.length} sub={`+${pacientesNovos.length} novos no período`} cor="#0f766e" />
-        <KpiCard icon={Calendar} label="Consultas no período" value={consultasFiltradas.length} sub={`Taxa: ${pct(realizadas, consultasFiltradas.length)}`} cor="#2563eb" />
-        <KpiCard icon={CheckCircle} label="Realizadas" value={realizadas} sub={`${canceladas} canceladas`} cor="#16a34a" />
-        <KpiCard icon={DollarSign} label="Receita confirmada" value={formatarMoeda(receitaConfirmada)} sub={`${formatarMoeda(receitaPendente)} pendente`} cor="#0f766e" />
+      {/* ── KPIs ── */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+          gap: "14px",
+        }}
+      >
+        {[
+          {
+            icon: Users,
+            label: "Total de pacientes",
+            value: pacientes.length,
+            sub: `+${pacientesNovos.length} novos no período`,
+            cor: "#0f766e",
+            bg: "#f0fdf9",
+          },
+          {
+            icon: Calendar,
+            label: "Consultas no período",
+            value: consultasFiltradas.length,
+            sub: `Taxa de comparecimento: ${taxaComparecimento}`,
+            cor: "#2563eb",
+            bg: "#eff6ff",
+          },
+          {
+            icon: CheckCircle,
+            label: "Realizadas",
+            value: realizadas,
+            sub: `${canceladas} canceladas · ${pendentesCount} pendentes`,
+            cor: "#16a34a",
+            bg: "#f0fdf4",
+          },
+          {
+            icon: DollarSign,
+            label: "Receita confirmada",
+            value: formatarMoeda(receitaConfirmada),
+            sub: `${formatarMoeda(receitaPendente)} pendente`,
+            cor: "#0f766e",
+            bg: "#f0fdf9",
+          },
+        ].map((kpi) => (
+          <div
+            key={kpi.label}
+            style={{
+              background: "#fff",
+              border: "1px solid #e2e8f0",
+              borderTop: `3px solid ${kpi.cor}`,
+              borderRadius: "12px",
+              padding: "18px 20px",
+              display: "flex",
+              alignItems: "flex-start",
+              gap: "14px",
+            }}
+          >
+            <div
+              style={{
+                width: 40,
+                height: 40,
+                borderRadius: "10px",
+                background: kpi.bg,
+                color: kpi.cor,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+            >
+              <kpi.icon size={20} />
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: "11px",
+                  color: "#64748b",
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.4px",
+                  marginBottom: "4px",
+                }}
+              >
+                {kpi.label}
+              </div>
+              <div
+                style={{
+                  fontSize: "24px",
+                  fontWeight: 800,
+                  color: kpi.cor,
+                  lineHeight: 1,
+                  marginBottom: "4px",
+                }}
+              >
+                {kpi.value}
+              </div>
+              <div style={{ fontSize: "11px", color: "#94a3b8" }}>{kpi.sub}</div>
+            </div>
+          </div>
+        ))}
       </div>
 
-      {/* Cards de relatório */}
-      <div className="rel-cards-grid">
+      {/* ── Cards de relatório ── */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+          gap: "16px",
+        }}
+      >
 
         {/* Pacientes */}
-        <div className="page-card rel-report-card">
-          <div className="rel-report-header">
-            <div className="rel-report-icon" style={{ background: "#f0fdf9", color: "#0f766e" }}>
-              <Users size={22} />
-            </div>
-            <div>
-              <h3 className="rel-report-title">Relatório de Pacientes</h3>
-              <p className="rel-report-sub">Cadastros e novos pacientes</p>
-            </div>
-          </div>
-          <div className="rel-stat-list">
-            <div className="rel-stat-row"><span>Total cadastrados</span><strong>{pacientes.length}</strong></div>
-            <div className="rel-stat-row"><span>Novos no período</span><strong style={{ color: "#0f766e" }}>{pacientesNovos.length}</strong></div>
-            <div className="rel-stat-row"><span>Usuários do sistema</span><strong>{users.length}</strong></div>
-          </div>
-          <button
-            className="primary-btn rel-pdf-btn"
-            onClick={() => gerarPDFPacientes({ total: pacientes.length, novosPeriodo: pacientesNovos.length, lista: pacientesNovos, labelPeriodo })}
+        <div
+          style={{
+            background: "#fff",
+            border: "1px solid #e2e8f0",
+            borderRadius: "12px",
+            padding: "22px 24px",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "space-between",
+              gap: "12px",
+              marginBottom: "20px",
+            }}
           >
-            <FileDown size={15} /> Gerar PDF
-          </button>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <div
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: "10px",
+                  background: "#f0fdf9",
+                  color: "#0f766e",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                }}
+              >
+                <Users size={20} />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>
+                  Relatório de Pacientes
+                </h3>
+                <p style={{ margin: "3px 0 0", fontSize: "12px", color: "#64748b" }}>
+                  Cadastros e novos pacientes
+                </p>
+              </div>
+            </div>
+            <button
+              className="primary-btn"
+              onClick={() =>
+                gerarPDFPacientes({
+                  total: pacientes.length,
+                  novosPeriodo: pacientesNovos.length,
+                  lista: pacientesNovos,
+                  labelPeriodo,
+                })
+              }
+              style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0, fontSize: "12px" }}
+            >
+              <FileDown size={13} /> Gerar PDF
+            </button>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+            <div
+              style={{
+                padding: "14px",
+                background: "#f8fafc",
+                borderRadius: "8px",
+                border: "1px solid #f0f4f8",
+              }}
+            >
+              <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "6px" }}>
+                Total cadastrados
+              </div>
+              <div style={{ fontSize: "26px", fontWeight: 800, color: "#0f172a" }}>
+                {pacientes.length}
+              </div>
+            </div>
+            <div
+              style={{
+                padding: "14px",
+                background: "#f0fdf9",
+                borderRadius: "8px",
+                border: "1px solid #d1fae5",
+              }}
+            >
+              <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "6px" }}>
+                Novos no período
+              </div>
+              <div style={{ fontSize: "26px", fontWeight: 800, color: "#0f766e" }}>
+                {pacientesNovos.length}
+              </div>
+            </div>
+            <div
+              style={{
+                padding: "14px",
+                background: "#f8fafc",
+                borderRadius: "8px",
+                border: "1px solid #f0f4f8",
+                gridColumn: "1 / -1",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <span style={{ fontSize: "12px", color: "#64748b" }}>Usuários do sistema</span>
+              <span style={{ fontSize: "16px", fontWeight: 700, color: "#0f172a" }}>
+                {users.length}
+              </span>
+            </div>
+          </div>
         </div>
 
         {/* Consultas */}
-        <div className="page-card rel-report-card">
-          <div className="rel-report-header">
-            <div className="rel-report-icon" style={{ background: "#eff6ff", color: "#2563eb" }}>
-              <Calendar size={22} />
-            </div>
-            <div>
-              <h3 className="rel-report-title">Relatório de Consultas</h3>
-              <p className="rel-report-sub">Atendimentos e agendamentos</p>
-            </div>
-          </div>
-          <div className="rel-stat-list">
-            <div className="rel-stat-row"><span>Total no período</span><strong>{consultasFiltradas.length}</strong></div>
-            <div className="rel-stat-row"><span>Realizadas</span><strong style={{ color: "#16a34a" }}>{realizadas}</strong></div>
-            <div className="rel-stat-row"><span>Canceladas</span><strong style={{ color: "#dc2626" }}>{canceladas}</strong></div>
-            <div className="rel-stat-row"><span>Taxa de comparecimento</span><strong style={{ color: "#2563eb" }}>{pct(realizadas, consultasFiltradas.length)}</strong></div>
-          </div>
-          <button
-            className="primary-btn rel-pdf-btn"
-            style={{ background: "#2563eb" }}
-            onClick={() => gerarPDFConsultas({ lista: consultasFiltradas, realizadas, canceladas, labelPeriodo })}
+        <div
+          style={{
+            background: "#fff",
+            border: "1px solid #e2e8f0",
+            borderRadius: "12px",
+            padding: "22px 24px",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "space-between",
+              gap: "12px",
+              marginBottom: "20px",
+            }}
           >
-            <FileDown size={15} /> Gerar PDF
-          </button>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <div
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: "10px",
+                  background: "#eff6ff",
+                  color: "#2563eb",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                }}
+              >
+                <Calendar size={20} />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>
+                  Relatório de Consultas
+                </h3>
+                <p style={{ margin: "3px 0 0", fontSize: "12px", color: "#64748b" }}>
+                  Atendimentos e agendamentos
+                </p>
+              </div>
+            </div>
+            <button
+              className="primary-btn"
+              onClick={() =>
+                gerarPDFConsultas({ lista: consultasFiltradas, realizadas, canceladas, labelPeriodo })
+              }
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                flexShrink: 0,
+                fontSize: "12px",
+                background: "#2563eb",
+              }}
+            >
+              <FileDown size={13} /> Gerar PDF
+            </button>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+            <div
+              style={{
+                padding: "14px",
+                background: "#f8fafc",
+                borderRadius: "8px",
+                border: "1px solid #f0f4f8",
+              }}
+            >
+              <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "6px" }}>
+                Total no período
+              </div>
+              <div style={{ fontSize: "26px", fontWeight: 800, color: "#0f172a" }}>
+                {consultasFiltradas.length}
+              </div>
+            </div>
+            <div
+              style={{
+                padding: "14px",
+                background: "#f0fdf4",
+                borderRadius: "8px",
+                border: "1px solid #d1fae5",
+              }}
+            >
+              <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "6px" }}>
+                Realizadas
+              </div>
+              <div style={{ fontSize: "26px", fontWeight: 800, color: "#16a34a" }}>
+                {realizadas}
+              </div>
+            </div>
+            <div
+              style={{
+                padding: "14px",
+                background: "#fef2f2",
+                borderRadius: "8px",
+                border: "1px solid #fecaca",
+              }}
+            >
+              <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "6px" }}>
+                Canceladas
+              </div>
+              <div style={{ fontSize: "26px", fontWeight: 800, color: "#dc2626" }}>
+                {canceladas}
+              </div>
+            </div>
+            <div
+              style={{
+                padding: "14px",
+                background: "#eff6ff",
+                borderRadius: "8px",
+                border: "1px solid #bfdbfe",
+              }}
+            >
+              <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "6px" }}>
+                Taxa de comparecimento
+              </div>
+              <div style={{ fontSize: "22px", fontWeight: 800, color: "#2563eb" }}>
+                {taxaComparecimento}
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Financeiro */}
-        <div className="page-card rel-report-card">
-          <div className="rel-report-header">
-            <div className="rel-report-icon" style={{ background: "#f0fdf4", color: "#16a34a" }}>
-              <DollarSign size={22} />
-            </div>
-            <div>
-              <h3 className="rel-report-title">Relatório Financeiro</h3>
-              <p className="rel-report-sub">Receitas e pagamentos</p>
-            </div>
-          </div>
-          <div className="rel-stat-list">
-            <div className="rel-stat-row"><span>Receita confirmada</span><strong style={{ color: "#16a34a" }}>{formatarMoeda(receitaConfirmada)}</strong></div>
-            <div className="rel-stat-row"><span>Pendente</span><strong style={{ color: "#f59e0b" }}>{formatarMoeda(receitaPendente)}</strong></div>
-            <div className="rel-stat-row"><span>Total de registros</span><strong>{pagamentosFiltrados.length}</strong></div>
-          </div>
-          <button
-            className="primary-btn rel-pdf-btn"
-            style={{ background: "#16a34a" }}
-            onClick={() => gerarPDFFinanceiro({ pagamentos: pagamentosFiltrados, receita: receitaConfirmada, pendente: receitaPendente, labelPeriodo })}
+        <div
+          style={{
+            background: "#fff",
+            border: "1px solid #e2e8f0",
+            borderRadius: "12px",
+            padding: "22px 24px",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "space-between",
+              gap: "12px",
+              marginBottom: "20px",
+            }}
           >
-            <FileDown size={15} /> Gerar PDF
-          </button>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <div
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: "10px",
+                  background: "#f0fdf4",
+                  color: "#16a34a",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                }}
+              >
+                <DollarSign size={20} />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>
+                  Relatório Financeiro
+                </h3>
+                <p style={{ margin: "3px 0 0", fontSize: "12px", color: "#64748b" }}>
+                  Receitas e pagamentos
+                </p>
+              </div>
+            </div>
+            <button
+              className="primary-btn"
+              onClick={() =>
+                gerarPDFFinanceiro({
+                  pagamentos: pagamentosFiltrados,
+                  receita: receitaConfirmada,
+                  pendente: receitaPendente,
+                  labelPeriodo,
+                })
+              }
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                flexShrink: 0,
+                fontSize: "12px",
+                background: "#16a34a",
+              }}
+            >
+              <FileDown size={13} /> Gerar PDF
+            </button>
+          </div>
+
+          {/* Receita confirmada em destaque */}
+          <div
+            style={{
+              padding: "16px",
+              background: "linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%)",
+              borderRadius: "10px",
+              border: "1px solid #bbf7d0",
+              marginBottom: "10px",
+            }}
+          >
+            <div style={{ fontSize: "11px", color: "#15803d", fontWeight: 600, marginBottom: "4px", textTransform: "uppercase", letterSpacing: "0.4px" }}>
+              Receita confirmada
+            </div>
+            <div style={{ fontSize: "30px", fontWeight: 800, color: "#15803d", lineHeight: 1 }}>
+              {formatarMoeda(receitaConfirmada)}
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+            <div
+              style={{
+                padding: "14px",
+                background: "#fffbeb",
+                borderRadius: "8px",
+                border: "1px solid #fde68a",
+              }}
+            >
+              <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "6px", display: "flex", alignItems: "center", gap: "4px" }}>
+                <AlertCircle size={11} /> Pendente
+              </div>
+              <div style={{ fontSize: "18px", fontWeight: 800, color: "#d97706" }}>
+                {formatarMoeda(receitaPendente)}
+              </div>
+            </div>
+            <div
+              style={{
+                padding: "14px",
+                background: "#f8fafc",
+                borderRadius: "8px",
+                border: "1px solid #f0f4f8",
+              }}
+            >
+              <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "6px" }}>
+                Total de registros
+              </div>
+              <div style={{ fontSize: "18px", fontWeight: 800, color: "#0f172a" }}>
+                {pagamentosFiltrados.length}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Tabela por especialidade */}
-      <div className="page-card">
-        <div className="card-title-row">
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <BarChart2 size={18} color="#0f766e" />
-            <h3 style={{ margin: 0 }}>Resumo por Especialidade / Tipo</h3>
+      {/* ── Tabela por especialidade ── */}
+      <div
+        style={{
+          background: "#fff",
+          border: "1px solid #e2e8f0",
+          borderRadius: "12px",
+          padding: "22px 24px",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: "16px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <div
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: "8px",
+                background: "#f0fdf9",
+                color: "#0f766e",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <BarChart2 size={18} />
+            </div>
+            <div>
+              <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>
+                Resumo por Especialidade / Tipo
+              </h3>
+              <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748b" }}>
+                Distribuição das consultas no período
+              </p>
+            </div>
           </div>
-          <span style={{ fontSize: "13px", color: "#64748b" }}>
+          <span
+            style={{
+              fontSize: "12px",
+              color: "#64748b",
+              background: "#f8fafc",
+              border: "1px solid #e2e8f0",
+              borderRadius: "20px",
+              padding: "4px 12px",
+            }}
+          >
             {consultasFiltradas.length} consulta(s) · {labelPeriodo}
           </span>
         </div>
 
         {porEspecialidade.length === 0 ? (
-          <div className="muted-box" style={{ textAlign: "center", color: "#94a3b8", padding: "32px" }}>
+          <div
+            style={{
+              textAlign: "center",
+              color: "#94a3b8",
+              padding: "32px",
+              background: "#f8fafc",
+              borderRadius: "8px",
+              fontSize: "13px",
+            }}
+          >
             Nenhuma consulta no período selecionado.
           </div>
         ) : (
@@ -522,15 +986,86 @@ export default function Relatorios({
               <tbody>
                 {porEspecialidade.map((row) => (
                   <tr key={row.especialidade}>
-                    <td><strong>{row.especialidade}</strong></td>
-                    <td>{row.total}</td>
-                    <td><span style={{ color: "#16a34a", fontWeight: 600 }}>{row.realizadas}</span></td>
-                    <td><span style={{ color: "#dc2626", fontWeight: 600 }}>{row.canceladas}</span></td>
-                    <td>{Math.max(0, row.total - row.realizadas - row.canceladas)}</td>
                     <td>
-                      <span className="badge" style={{ background: "#f0fdf4", color: "#16a34a" }}>
-                        {pct(row.realizadas, row.total)}
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <div
+                          style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: "50%",
+                            background: "#0f766e",
+                            flexShrink: 0,
+                          }}
+                        />
+                        <strong>{row.especialidade}</strong>
+                      </div>
+                    </td>
+                    <td>
+                      <strong style={{ fontSize: "14px" }}>{row.total}</strong>
+                    </td>
+                    <td>
+                      <span
+                        style={{
+                          color: "#16a34a",
+                          fontWeight: 700,
+                          background: "#f0fdf4",
+                          padding: "2px 8px",
+                          borderRadius: "12px",
+                          fontSize: "12px",
+                        }}
+                      >
+                        {row.realizadas}
                       </span>
+                    </td>
+                    <td>
+                      <span
+                        style={{
+                          color: "#dc2626",
+                          fontWeight: 700,
+                          background: "#fef2f2",
+                          padding: "2px 8px",
+                          borderRadius: "12px",
+                          fontSize: "12px",
+                        }}
+                      >
+                        {row.canceladas}
+                      </span>
+                    </td>
+                    <td style={{ color: "#64748b" }}>
+                      {Math.max(0, row.total - row.realizadas - row.canceladas)}
+                    </td>
+                    <td>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <div
+                          style={{
+                            flex: 1,
+                            height: 5,
+                            background: "#e2e8f0",
+                            borderRadius: "3px",
+                            overflow: "hidden",
+                            minWidth: "40px",
+                          }}
+                        >
+                          <div
+                            style={{
+                              height: "100%",
+                              width: `${row.total ? (row.realizadas / row.total) * 100 : 0}%`,
+                              background: "#0f766e",
+                              borderRadius: "3px",
+                            }}
+                          />
+                        </div>
+                        <span
+                          style={{
+                            fontSize: "12px",
+                            fontWeight: 700,
+                            color: "#0f766e",
+                            minWidth: "36px",
+                          }}
+                        >
+                          {pct(row.realizadas, row.total)}
+                        </span>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -545,7 +1080,17 @@ export default function Relatorios({
 
 function Clock({ size }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: "inline", verticalAlign: "middle", marginRight: "4px" }}>
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ display: "inline", verticalAlign: "middle" }}
+    >
       <circle cx="12" cy="12" r="10" />
       <polyline points="12 6 12 12 16 14" />
     </svg>

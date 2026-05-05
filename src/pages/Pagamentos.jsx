@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import {
   addDoc,
   collection,
+  doc,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
+  updateDoc,
 } from "firebase/firestore";
 
 import { db } from "../services/firebase";
@@ -50,11 +52,12 @@ function obterDataHoje() {
   return `${ano}-${mes}-${dia}`;
 }
 
-export default function Pagamentos({ pacientes = [], consultas = [] }) {
+export default function Pagamentos({ pacientes = [], consultas = [], pagamentoCheckout = null, onLimparCheckout }) {
   const { userData, firebaseUser } = useAuth();
 
   const [pagamentos, setPagamentos] = useState([]);
   const [salvandoPagamento, setSalvandoPagamento] = useState(false);
+  const [pagamentoIdParaAtualizar, setPagamentoIdParaAtualizar] = useState(null);
 
   const [pagamento, setPagamento] = useState({
     pacienteId: "",
@@ -84,6 +87,24 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
 
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!pagamentoCheckout) return;
+    setPagamento({
+      pacienteId: pagamentoCheckout.pacienteId || "",
+      paciente: pagamentoCheckout.paciente || "",
+      cpf: pagamentoCheckout.cpf || "",
+      telefone: pagamentoCheckout.telefone || "",
+      atendimentoId: pagamentoCheckout.atendimentoId || "",
+      tipoAtendimento: pagamentoCheckout.tipoAtendimento || "",
+      valor: pagamentoCheckout.valor || "",
+      formaPagamento: "Dinheiro",
+      statusPagamento: "Pago",
+      dataPagamento: new Date().toISOString().split("T")[0],
+      observacoes: "",
+    });
+    setPagamentoIdParaAtualizar(pagamentoCheckout.pagamentoId || null);
+  }, [pagamentoCheckout]);
 
   const atendimentosPagos = useMemo(() => {
     return pagamentos
@@ -219,6 +240,7 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
       dataPagamento: new Date().toISOString().split("T")[0],
       observacoes: "",
     });
+    setPagamentoIdParaAtualizar(null);
   }
 
   async function salvarPagamento() {
@@ -258,26 +280,45 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
     try {
       setSalvandoPagamento(true);
 
-      await addDoc(collection(db, "pagamentos"), {
-        pacienteId: pagamento.pacienteId || "",
-        paciente: pagamento.paciente,
-        cpf: pagamento.cpf || "",
-        telefone: pagamento.telefone || "",
-        atendimentoId: pagamento.atendimentoId || "",
-        tipoAtendimento: pagamento.tipoAtendimento,
-        valor: valorNumerico,
-        formaPagamento: pagamento.formaPagamento,
-        statusPagamento: pagamento.statusPagamento,
-        dataPagamento: pagamento.dataPagamento,
-        observacoes: pagamento.observacoes || "",
-        origem: "Pagamentos",
-        tipoMovimentacao: "Receita",
-        criadoPor:
-          userData?.nome || userData?.name || firebaseUser?.email || "Usuário",
-        criadoPorEmail: firebaseUser?.email || "",
-        criadoEm: serverTimestamp(),
-      });
+      if (pagamentoIdParaAtualizar) {
+        await updateDoc(doc(db, "pagamentos", pagamentoIdParaAtualizar), {
+          paciente: pagamento.paciente,
+          cpf: pagamento.cpf || "",
+          telefone: pagamento.telefone || "",
+          atendimentoId: pagamento.atendimentoId || "",
+          tipoAtendimento: pagamento.tipoAtendimento,
+          valor: valorNumerico,
+          formaPagamento: pagamento.formaPagamento,
+          statusPagamento: pagamento.statusPagamento,
+          status: pagamento.statusPagamento.toLowerCase(),
+          dataPagamento: pagamento.dataPagamento,
+          observacoes: pagamento.observacoes || "",
+          atualizadoPor: userData?.nome || userData?.name || firebaseUser?.email || "Usuário",
+          atualizadoEm: serverTimestamp(),
+        });
+      } else {
+        await addDoc(collection(db, "pagamentos"), {
+          pacienteId: pagamento.pacienteId || "",
+          paciente: pagamento.paciente,
+          cpf: pagamento.cpf || "",
+          telefone: pagamento.telefone || "",
+          atendimentoId: pagamento.atendimentoId || "",
+          tipoAtendimento: pagamento.tipoAtendimento,
+          valor: valorNumerico,
+          formaPagamento: pagamento.formaPagamento,
+          statusPagamento: pagamento.statusPagamento,
+          dataPagamento: pagamento.dataPagamento,
+          observacoes: pagamento.observacoes || "",
+          origem: "Pagamentos",
+          tipoMovimentacao: "Receita",
+          criadoPor: userData?.nome || userData?.name || firebaseUser?.email || "Usuário",
+          criadoPorEmail: firebaseUser?.email || "",
+          criadoEm: serverTimestamp(),
+        });
+      }
 
+      setPagamentoIdParaAtualizar(null);
+      onLimparCheckout?.();
       limparPagamento();
       alert("Pagamento registrado com sucesso. Ele já ficará disponível no Financeiro.");
     } catch (error) {
@@ -402,7 +443,43 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
                 </span>
               </div>
 
+              {pagamentoCheckout && (
+                <div
+                  style={{
+                    marginBottom: "14px",
+                    padding: "12px 14px",
+                    background: "linear-gradient(135deg, #f0fdf4, #ecfdf5)",
+                    border: "1px solid #86efac",
+                    borderRadius: "10px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "10px",
+                    fontSize: "13px",
+                    color: "#15803d",
+                  }}
+                >
+                  <span style={{ fontSize: "18px" }}>✅</span>
+                  <div>
+                    <div style={{ fontWeight: 700 }}>
+                      Checkout encaminhado pela recepção
+                    </div>
+                    <div style={{ color: "#16a34a", marginTop: "2px" }}>
+                      {pagamentoCheckout.paciente} — {pagamentoCheckout.tipoAtendimento}
+                      {pagamentoCheckout.profissional ? ` · ${pagamentoCheckout.profissional}` : ""}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => { onLimparCheckout?.(); setPagamentoIdParaAtualizar(null); limparPagamento(); }}
+                    style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", color: "#64748b", fontSize: "16px", padding: "2px 6px" }}
+                    title="Limpar checkout"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+
               <div className="patients-form-grid">
+                {!pagamentoCheckout && (
                 <div className="patients-full-width">
                   <label>Atendimento do dia</label>
                   <select
@@ -420,6 +497,7 @@ export default function Pagamentos({ pacientes = [], consultas = [] }) {
                     ))}
                   </select>
                 </div>
+                )}
 
                 <div>
                   <label>Nome do paciente</label>

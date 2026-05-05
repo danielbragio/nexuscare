@@ -17,6 +17,11 @@ import {
 
 import { auth, db } from "../services/firebase";
 import { useAuth } from "../context/AuthContext";
+import {
+  ESPECIALIDADES_MEDICO,
+  ESPECIALIDADES_ODONTO,
+  ESPECIALIDADES_ODONTO_EXCLUSIVAS,
+} from "../config/especialidades";
 
 function normalizarTexto(valor) {
   return String(valor || "")
@@ -182,6 +187,22 @@ function profissionalEhAssistencial(profissional) {
   );
 }
 
+function profissionalTemEspecialidade(prof, esp) {
+  if (!esp) return true;
+  const norm = normalizarTexto(esp);
+  const profEsp = normalizarTexto(prof.especialidade || "");
+  if (profEsp && (profEsp === norm || profEsp.includes(norm) || norm.includes(profEsp))) return true;
+  if (!prof.especialidade) {
+    if (norm.includes("odonto") || norm.includes("dentis")) return profissionalEhOdontologico(prof);
+    const role = normalizarTexto(prof.role || "");
+    if (norm.includes("enferm")) return role === "enfermeiro" || role === "enfermagem";
+    if (norm.includes("medic") || norm.includes("médic") || norm.includes("clin") || norm.includes("geral")) {
+      return role === "medico" || role === "médico";
+    }
+  }
+  return false;
+}
+
 function possuiAgendaNoDia(profissional, diaSemana) {
   if (!diaSemana) return false;
 
@@ -341,8 +362,10 @@ export default function Pacientes({
   pacientes = [],
   consultas = [],
   procedimentosOdonto = [],
+  users = [],
   onAdicionarPaciente,
   onAdicionarConsulta,
+  onEncaminharParaPagamento,
 }) {
   const { userData, firebaseUser } = useAuth();
 
@@ -374,7 +397,7 @@ export default function Pacientes({
     observacoes: "",
   });
 
-  const [destinoAtendimento, setDestinoAtendimento] = useState("medico");
+  const [especialidadeSelecionada, setEspecialidadeSelecionada] = useState("");
   const [procedimentosSelecionadosOdonto, setProcedimentosSelecionadosOdonto] = useState([]);
   const [buscaProcedimentos, setBuscaProcedimentos] = useState("");
   const [mostrarProcedimentos, setMostrarProcedimentos] = useState(false);
@@ -401,15 +424,16 @@ export default function Pacientes({
 
   const isAdmin = userData?.role === "admin";
 
-  useEffect(() => {
-    carregarProfissionaisDisponiveis(agendamento.data);
-  }, [agendamento.data, consultas]);
+  // Roteamento: especialidades exclusivamente odontológicas vão para odonto path
+  const isOdonto = ESPECIALIDADES_ODONTO_EXCLUSIVAS.has(especialidadeSelecionada);
+
+  const destinoAtendimento = isOdonto ? "odonto" : "medico";
 
   useEffect(() => {
-    if (destinoAtendimento === "odonto") {
-      carregarProfissionaisOdonto();
+    if (!isOdonto) {
+      carregarProfissionaisDisponiveis(agendamento.data, especialidadeSelecionada);
     }
-  }, [destinoAtendimento]);
+  }, [agendamento.data, consultas, especialidadeSelecionada]);
 
   async function carregarProfissionaisOdonto() {
     try {
@@ -425,7 +449,7 @@ export default function Pacientes({
     }
   }
 
-  async function carregarProfissionaisDisponiveis(dataSelecionada) {
+  async function carregarProfissionaisDisponiveis(dataSelecionada, espFiltro = "") {
     if (!dataSelecionada) {
       setProfissionaisDisponiveis([]);
       setHorariosDisponiveis([]);
@@ -472,6 +496,7 @@ export default function Pacientes({
       const disponiveis = profissionais
         .filter((profissional) => profissional.ativo === true)
         .filter(profissionalEhAssistencial)
+        .filter((profissional) => profissionalTemEspecialidade(profissional, espFiltro))
         .filter((profissional) => possuiAgendaNoDia(profissional, diaSemana))
         .map((profissional) => {
           const horariosCadastrados = obterHorariosDoProfissional(profissional, diaSemana);
@@ -589,6 +614,25 @@ export default function Pacientes({
     }));
   }
 
+  function handleEspecialidadeChange(nova) {
+    const isOdontoNova =
+      normalizarTexto(nova).includes("odonto") || normalizarTexto(nova).includes("dentis");
+    setEspecialidadeSelecionada(nova);
+    setAgendamento((prev) => ({
+      ...prev,
+      especialidade: nova,
+      medico: "",
+      medicoId: "",
+      medicoEmail: "",
+      hora: "",
+    }));
+    setProfissionalOdontoId("");
+    setProfissionalOdontoNome("");
+    setHorariosDisponiveis([]);
+    setProfissionaisDisponiveis([]);
+    if (isOdontoNova) carregarProfissionaisOdonto();
+  }
+
   function limparFormulario() {
     setForm({
       nome: "",
@@ -622,7 +666,7 @@ export default function Pacientes({
       tipoAtendimento: "Agendamento",
       valorConsulta: "",
     });
-    setDestinoAtendimento("medico");
+    setEspecialidadeSelecionada("");
     setProcedimentosSelecionadosOdonto([]);
     setBuscaProcedimentos("");
     setMostrarProcedimentos(false);
@@ -746,9 +790,24 @@ export default function Pacientes({
         });
 
         limparAgendamento();
-        alert(
-          `Paciente encaminhado para Odontologia.\nPagamento pendente de ${valorTotal.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })} criado no módulo Pagamentos.`
-        );
+        if (onEncaminharParaPagamento) {
+          onEncaminharParaPagamento({
+            pagamentoId: pagRef.id,
+            atendimentoId: agRef.id,
+            paciente: agendamento.nomePaciente,
+            cpf: agendamento.cpf || "",
+            telefone: agendamento.telefone || "",
+            tipoAtendimento: `Odontologia — ${tipoAtend}`,
+            profissional: profissionalOdontoNome || "",
+            valor: valorTotal,
+            descricao: descricaoProc,
+            tipo: "odonto",
+          });
+        } else {
+          alert(
+            `Paciente encaminhado para Odontologia.\nPagamento pendente de ${valorTotal.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })} criado no módulo Pagamentos.`
+          );
+        }
       } catch (error) {
         console.error("Erro ao encaminhar para odonto:", error);
         alert("Não foi possível encaminhar para Odontologia.");
@@ -806,6 +865,7 @@ export default function Pacientes({
       });
 
       // Create linked payment for medical appointment
+      let checkoutMedico = null;
       if (docRef?.id) {
         const valorConsulta = Number(agendamento.valorConsulta || 0);
         const pagRef = await addDoc(collection(db, "pagamentos"), {
@@ -832,10 +892,26 @@ export default function Pacientes({
         await updateDoc(doc(db, "appointments", docRef.id), {
           pagamentoId: pagRef.id,
         });
+        checkoutMedico = {
+          pagamentoId: pagRef.id,
+          atendimentoId: docRef.id,
+          paciente: agendamento.nomePaciente,
+          cpf: agendamento.cpf || "",
+          telefone: agendamento.telefone || "",
+          tipoAtendimento: `Consulta — ${agendamento.especialidade}`,
+          profissional: agendamento.medico || "",
+          valor: valorConsulta,
+          descricao: `Consulta — ${agendamento.especialidade}`,
+          tipo: "consulta",
+        };
       }
 
       limparAgendamento();
-      alert("Atendimento registrado com sucesso.\nPagamento pendente criado no módulo Pagamentos.");
+      if (checkoutMedico && onEncaminharParaPagamento) {
+        onEncaminharParaPagamento(checkoutMedico);
+      } else {
+        alert("Atendimento registrado com sucesso.\nPagamento pendente criado no módulo Pagamentos.");
+      }
     } catch (error) {
       console.error("Erro ao registrar atendimento:", error);
       alert("Não foi possível registrar o atendimento.");
@@ -1013,6 +1089,7 @@ export default function Pacientes({
   };
 
   const profissionalDesabilitado =
+    !especialidadeSelecionada ||
     !agendamento.data ||
     carregandoProfissionais ||
     profissionaisDisponiveis.length === 0;
@@ -1510,35 +1587,30 @@ export default function Pacientes({
                     </div>
 
                     <div className="patients-full-width">
-                      <label>Destino do atendimento</label>
-                      <div style={{ display: "flex", gap: "10px", marginTop: "6px" }}>
-                        <button
-                          type="button"
-                          onClick={() => { setDestinoAtendimento("medico"); setProcedimentosSelecionadosOdonto([]); }}
-                          style={{
-                            flex: 1, padding: "10px", border: "2px solid",
-                            borderRadius: "10px", cursor: "pointer", fontWeight: 600, fontSize: "13px",
-                            borderColor: destinoAtendimento === "medico" ? "#2563eb" : "#cbd5e1",
-                            background: destinoAtendimento === "medico" ? "#eff6ff" : "#fff",
-                            color: destinoAtendimento === "medico" ? "#2563eb" : "#64748b",
-                          }}
-                        >
-                          👨‍⚕️ Médico / Clínica
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setDestinoAtendimento("odonto")}
-                          style={{
-                            flex: 1, padding: "10px", border: "2px solid",
-                            borderRadius: "10px", cursor: "pointer", fontWeight: 600, fontSize: "13px",
-                            borderColor: destinoAtendimento === "odonto" ? "#0f766e" : "#cbd5e1",
-                            background: destinoAtendimento === "odonto" ? "#f0fdf9" : "#fff",
-                            color: destinoAtendimento === "odonto" ? "#0f766e" : "#64748b",
-                          }}
-                        >
-                          🦷 Odontologia
-                        </button>
-                      </div>
+                      <label>Especialidade do atendimento</label>
+                      <select
+                        className="select"
+                        value={especialidadeSelecionada}
+                        onChange={(e) => handleEspecialidadeChange(e.target.value)}
+                      >
+                        <option value="">Selecione a especialidade</option>
+                        <optgroup label="🏥 Medicina">
+                          {ESPECIALIDADES_MEDICO.map((esp) => (
+                            <option key={`med-${esp}`} value={esp}>
+                              {esp}
+                            </option>
+                          ))}
+                        </optgroup>
+                        <optgroup label="🦷 Odontologia">
+                          {ESPECIALIDADES_ODONTO.filter(
+                            (esp) => ESPECIALIDADES_ODONTO_EXCLUSIVAS.has(esp)
+                          ).map((esp) => (
+                            <option key={`odo-${esp}`} value={esp}>
+                              {esp}
+                            </option>
+                          ))}
+                        </optgroup>
+                      </select>
                     </div>
 
                     {destinoAtendimento === "odonto" && (
@@ -1709,8 +1781,10 @@ export default function Pacientes({
                             disabled={profissionalDesabilitado}
                           >
                             <option value="">
-                              {!agendamento.data
-                                ? "Selecione uma data primeiro"
+                              {!especialidadeSelecionada
+                                ? "Selecione a especialidade primeiro"
+                                : !agendamento.data
+                                ? "Selecione uma data"
                                 : carregandoProfissionais
                                 ? "Carregando profissionais..."
                                 : profissionaisDisponiveis.length === 0
@@ -1726,17 +1800,6 @@ export default function Pacientes({
                               </option>
                             ))}
                           </select>
-                        </div>
-
-                        <div>
-                          <label>Especialidade</label>
-                          <input
-                            className="input"
-                            name="especialidade"
-                            value={agendamento.especialidade}
-                            onChange={handleAgendamentoChange}
-                            placeholder="Ex.: Médico, Enfermeiro, Fisioterapeuta"
-                          />
                         </div>
 
                         <div>
@@ -1797,13 +1860,13 @@ export default function Pacientes({
                     <button
                       onClick={registrarAtendimento}
                       className="primary-btn"
-                      disabled={salvandoConsulta || (destinoAtendimento === "medico" && carregandoProfissionais)}
+                      disabled={salvandoConsulta || (!isOdonto && carregandoProfissionais) || !especialidadeSelecionada}
                     >
                       {salvandoConsulta
                         ? "Enviando..."
-                        : destinoAtendimento === "odonto"
+                        : isOdonto
                         ? "🦷 Encaminhar para Odontologia"
-                        : "Enviar para o profissional"}
+                        : "Encaminhar para o profissional"}
                     </button>
                     <button onClick={limparAgendamento} className="secondary-btn">
                       Limpar

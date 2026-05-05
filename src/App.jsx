@@ -55,6 +55,7 @@ import Normas from "./pages/Normas";
 import Prontuario from "./pages/Prontuario";
 import Estoque from "./pages/Estoque";
 import Relatorios from "./pages/Relatorios";
+import ModalPerfil from "./components/ModalPerfil";
 
 function FirebaseLoginScreen() {
   const [usuario, setUsuario] = useState("");
@@ -232,9 +233,18 @@ function EscolherConsultorio({
   onSelecionar,
   onSair,
 }) {
+  function sessaoAtiva(consultorio) {
+    if (!consultorio?.lastActive) return false;
+    const ts = consultorio.lastActive?.toDate
+      ? consultorio.lastActive.toDate()
+      : new Date(consultorio.lastActive);
+    return Date.now() - ts.getTime() < 60000;
+  }
+
   const salas = Array.from({ length: 7 }, (_, index) => {
     const numero = index + 1;
-    const ocupado = consultorios.find((item) => Number(item.numero) === numero);
+    const encontrado = consultorios.find((item) => Number(item.numero) === numero);
+    const ocupado = encontrado && sessaoAtiva(encontrado) ? encontrado : null;
 
     return {
       numero,
@@ -311,6 +321,9 @@ export default function App() {
   const [sidebarMinimizada, setSidebarMinimizada] = useState(false);
   const [consultorioConfirmadoSessao, setConsultorioConfirmadoSessao] = useState(false);
   const [consultaSelecionadaExterna, setConsultaSelecionadaExterna] = useState(null);
+  const [pagamentoCheckout, setPagamentoCheckout] = useState(null);
+  const [mostrarPerfil, setMostrarPerfil] = useState(false);
+  const [fotoURLPerfil, setFotoURLPerfil] = useState(userData?.photoURL || "");
 
   const [menuAberto, setMenuAberto] = useState({
     principal: true,
@@ -337,9 +350,40 @@ export default function App() {
   }, [consultorios, firebaseUser]);
 
   useEffect(() => {
+    setFotoURLPerfil(userData?.photoURL || "");
+  }, [userData?.photoURL]);
+
+  useEffect(() => {
     setConsultorioConfirmadoSessao(false);
     setConsultaSelecionadaExterna(null);
   }, [firebaseUser?.uid]);
+
+  useEffect(() => {
+    if (!consultorioConfirmadoSessao || !firebaseUser) return;
+    const interval = setInterval(async () => {
+      try {
+        await updateDoc(doc(db, "consultorios", firebaseUser.uid), {
+          lastActive: serverTimestamp(),
+        });
+      } catch (_) {}
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [consultorioConfirmadoSessao, firebaseUser]);
+
+  useEffect(() => {
+    if (!consultorioConfirmadoSessao || !firebaseUser) return;
+    const handleUnload = () => {
+      try {
+        deleteDoc(doc(db, "consultorios", firebaseUser.uid));
+      } catch (_) {}
+    };
+    window.addEventListener("beforeunload", handleUnload);
+    window.addEventListener("pagehide", handleUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleUnload);
+      window.removeEventListener("pagehide", handleUnload);
+    };
+  }, [consultorioConfirmadoSessao, firebaseUser]);
 
   useEffect(() => {
     if (!firebaseUser) {
@@ -536,6 +580,7 @@ export default function App() {
       medicoEmail: firebaseUser.email || "",
       crm: userData?.crm || "",
       status: "ocupado",
+      lastActive: serverTimestamp(),
       atualizadoEm: serverTimestamp(),
     });
 
@@ -559,6 +604,11 @@ export default function App() {
     } catch (error) {
       console.error("Erro ao liberar consultório do usuário:", error);
     }
+  }
+
+  function encaminharParaPagamento(checkoutData) {
+    setPagamentoCheckout(checkoutData);
+    setView("pagamentos");
   }
 
   async function adicionarPaciente(novoPaciente) {
@@ -664,6 +714,7 @@ export default function App() {
             procedimentosOdonto={procedimentosOdonto}
             onAdicionarPaciente={adicionarPaciente}
             onAdicionarConsulta={adicionarConsulta}
+            onEncaminharParaPagamento={encaminharParaPagamento}
           />
         );
 
@@ -673,6 +724,8 @@ export default function App() {
             pacientes={pacientes}
             consultas={consultas}
             pagamentos={pagamentos}
+            pagamentoCheckout={pagamentoCheckout}
+            onLimparCheckout={() => setPagamentoCheckout(null)}
           />
         );
 
@@ -924,9 +977,22 @@ export default function App() {
           )}
         </div>
 
-        <div className="sidebar-footer">
-          <div className="sidebar-user-avatar">
-            {(userData?.nome || userData?.name || firebaseUser?.email || "U").charAt(0).toUpperCase()}
+        <div
+          className="sidebar-footer"
+          onClick={() => setMostrarPerfil(true)}
+          style={{ cursor: "pointer" }}
+          title="Meu Perfil"
+        >
+          <div className="sidebar-user-avatar" style={{ overflow: "hidden", padding: 0 }}>
+            {fotoURLPerfil ? (
+              <img
+                src={fotoURLPerfil}
+                alt="Foto"
+                style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }}
+              />
+            ) : (
+              (userData?.nome || userData?.name || firebaseUser?.email || "U").charAt(0).toUpperCase()
+            )}
           </div>
           <div className="sidebar-user-info">
             <span className="sidebar-user-name">
@@ -1012,6 +1078,15 @@ export default function App() {
 
         <main className="main-content">{renderView()}</main>
       </div>
+
+      {mostrarPerfil && (
+        <ModalPerfil
+          firebaseUser={firebaseUser}
+          userData={userData}
+          onClose={() => setMostrarPerfil(false)}
+          onPhotoUpdate={(url) => setFotoURLPerfil(url)}
+        />
+      )}
     </div>
   );
 }
