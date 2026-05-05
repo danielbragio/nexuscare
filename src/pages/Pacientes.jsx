@@ -435,12 +435,23 @@ export default function Pacientes({
     }
   }, [agendamento.data, consultas, especialidadeSelecionada]);
 
-  async function carregarProfissionaisOdonto() {
+  async function carregarProfissionaisOdonto(espFiltro = "") {
     try {
       setCarregandoProfissionaisOdonto(true);
       const snap = await getDocs(query(collection(db, "users"), where("ativo", "==", true)));
       const todos = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      setProfissionaisOdonto(todos.filter(profissionalEhOdontologico));
+      const odonto = todos.filter(profissionalEhOdontologico);
+      if (espFiltro) {
+        const norm = normalizarTexto(espFiltro);
+        const comEsp = odonto.filter((p) => {
+          if (!p.especialidade) return true; // sem especialidade definida: aparece para todas
+          const pe = normalizarTexto(p.especialidade);
+          return pe === norm || pe.includes(norm) || norm.includes(pe);
+        });
+        setProfissionaisOdonto(comEsp.length > 0 ? comEsp : odonto);
+      } else {
+        setProfissionaisOdonto(odonto);
+      }
     } catch (e) {
       console.error("Erro ao carregar profissionais odonto:", e);
       setProfissionaisOdonto([]);
@@ -468,30 +479,8 @@ export default function Pacientes({
 
       const diaSemana = obterDiaSemana(dataSelecionada);
 
-      const buscas = await Promise.allSettled([
-        getDocs(query(collection(db, "users"), where("ativo", "==", true))),
-        getDocs(query(collection(db, "medicos"), where("ativo", "==", true))),
-      ]);
-
-      const profissionais = [];
-
-      buscas.forEach((resultado) => {
-        if (resultado.status !== "fulfilled") return;
-
-        resultado.value.docs.forEach((documento) => {
-          const dados = { id: documento.id, ...documento.data() };
-
-          const jaExiste = profissionais.some(
-            (item) =>
-              obterIdProfissional(item) === obterIdProfissional(dados) ||
-              normalizarTexto(item.email) === normalizarTexto(dados.email)
-          );
-
-          if (!jaExiste) {
-            profissionais.push(dados);
-          }
-        });
-      });
+      const usersSnap = await getDocs(query(collection(db, "users"), where("ativo", "==", true)));
+      const profissionais = usersSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
       const disponiveis = profissionais
         .filter((profissional) => profissional.ativo === true)
@@ -615,8 +604,6 @@ export default function Pacientes({
   }
 
   function handleEspecialidadeChange(nova) {
-    const isOdontoNova =
-      normalizarTexto(nova).includes("odonto") || normalizarTexto(nova).includes("dentis");
     setEspecialidadeSelecionada(nova);
     setAgendamento((prev) => ({
       ...prev,
@@ -630,7 +617,7 @@ export default function Pacientes({
     setProfissionalOdontoNome("");
     setHorariosDisponiveis([]);
     setProfissionaisDisponiveis([]);
-    if (isOdontoNova) carregarProfissionaisOdonto();
+    if (ESPECIALIDADES_ODONTO_EXCLUSIVAS.has(nova)) carregarProfissionaisOdonto();
   }
 
   function limparFormulario() {
@@ -748,6 +735,7 @@ export default function Pacientes({
           pacienteId: "",
           profissionalNome: profissionalOdontoNome || "",
           profissionalId: profissionalOdontoId || "",
+          profissionalUid: profissionalOdontoId || "",
           data: agendamento.data || dataHoje,
           hora: horaOdonto || "",
           tipoAtendimento: tipoAtend,
@@ -849,6 +837,7 @@ export default function Pacientes({
         profissional: agendamento.medico,
         medicoId: agendamento.medicoId,
         profissionalId: agendamento.medicoId,
+        profissionalUid: agendamento.medicoId,
         medicoEmail: agendamento.medicoEmail,
         profissionalEmail: agendamento.medicoEmail,
         data: agendamento.data,

@@ -400,30 +400,29 @@ export default function App() {
 
     setDataLoading(true);
 
-    const qPacientes = query(
-      collection(db, "patients"),
-      orderBy("createdAt", "desc")
-    );
+    const uid = firebaseUser.uid;
+    const role = userData?.role || "";
+    const podeVerTodos =
+      role === "admin" ||
+      role === "recepcao" ||
+      role === "financeiro" ||
+      role === "estoque" ||
+      role === "enfermagem" ||
+      (Array.isArray(userData?.permissions) && userData.permissions.includes("administracao"));
 
-    const qConsultas = query(
-      collection(db, "appointments"),
-      orderBy("createdAt", "desc")
-    );
+    const qPacientes = query(collection(db, "patients"), orderBy("createdAt", "desc"));
 
-    const qPagamentos = query(
-      collection(db, "pagamentos"),
-      orderBy("createdAt", "desc")
-    );
+    const qConsultas = podeVerTodos
+      ? query(collection(db, "appointments"), orderBy("createdAt", "desc"))
+      : query(collection(db, "appointments"), where("profissionalId", "==", uid), orderBy("createdAt", "desc"));
 
-    const qConsultorios = query(
-      collection(db, "consultorios"),
-      orderBy("numero", "asc")
-    );
+    const qPagamentos = query(collection(db, "pagamentos"), orderBy("createdAt", "desc"));
+    const qConsultorios = query(collection(db, "consultorios"), orderBy("numero", "asc"));
+    const qUsers = query(collection(db, "users"), orderBy("nome", "asc"));
 
-    const qUsers = query(
-      collection(db, "users"),
-      orderBy("nome", "asc")
-    );
+    const qAtendimentosOdonto = podeVerTodos
+      ? query(collection(db, "atendimentosOdonto"), orderBy("createdAt", "desc"))
+      : query(collection(db, "atendimentosOdonto"), where("profissionalId", "==", uid), orderBy("createdAt", "desc"));
 
     const unsubPacientes = onSnapshot(qPacientes, (snapshot) => {
       setPacientes(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
@@ -432,7 +431,7 @@ export default function App() {
     const unsubConsultas = onSnapshot(qConsultas, (snapshot) => {
       setConsultas(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
       setDataLoading(false);
-    });
+    }, (err) => { console.error("appointments:", err); setConsultas([]); setDataLoading(false); });
 
     const unsubPagamentos = onSnapshot(
       qPagamentos,
@@ -454,7 +453,7 @@ export default function App() {
     });
 
     const unsubAtendimentosOdonto = onSnapshot(
-      query(collection(db, "atendimentosOdonto"), orderBy("createdAt", "desc")),
+      qAtendimentosOdonto,
       (snap) => setAtendimentosOdonto(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
       (err) => { console.error("atendimentosOdonto:", err); setAtendimentosOdonto([]); }
     );
@@ -474,7 +473,7 @@ export default function App() {
       unsubAtendimentosOdonto();
       unsubProcedimentosOdonto();
     };
-  }, [firebaseUser]);
+  }, [firebaseUser, userData?.role, userData?.permissions]);
 
   async function criarUsuario(novoUsuario) {
     const username = novoUsuario.username.trim();

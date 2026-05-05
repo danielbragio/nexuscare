@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useAuth } from "../context/AuthContext";
 import {
   addDoc,
   collection,
@@ -9,6 +10,7 @@ import {
   query,
   serverTimestamp,
   updateDoc,
+  where,
 } from "firebase/firestore";
 import { db } from "../services/firebase";
 
@@ -96,6 +98,7 @@ const PERGUNTAS_RAPIDAS = [
 ];
 
 export default function Odonto({ pacientes = [], users = [], userData = null, pagamentos = [], procedimentosOdonto = [] }) {
+  const { firebaseUser } = useAuth();
   const isAdmin =
     userData?.role === "admin" ||
     (Array.isArray(userData?.permissions) && userData.permissions.includes("administracao"));
@@ -142,14 +145,26 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
 
   // ── Firestore subscriptions ─────────────────────────────────────────────────
   useEffect(() => {
-    const unsubAg = onSnapshot(
-      query(collection(db, "agendamentosOdonto"), orderBy("createdAt", "desc")),
-      (snap) => setAgendamentos(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
-    );
+    const role = userData?.role || "";
+    const uid = firebaseUser?.uid || "";
+    const podeVerTodos =
+      isAdmin || role === "recepcao" || !uid;
 
-    const unsubAt = onSnapshot(
-      query(collection(db, "atendimentosOdonto"), orderBy("createdAt", "desc")),
-      (snap) => setAtendimentos(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
+    const qAg = podeVerTodos
+      ? query(collection(db, "agendamentosOdonto"), orderBy("createdAt", "desc"))
+      : query(collection(db, "agendamentosOdonto"), where("profissionalId", "==", uid), orderBy("createdAt", "desc"));
+
+    const unsubAg = onSnapshot(qAg, (snap) => {
+      const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setAgendamentos(docs);
+    });
+
+    const qAt = podeVerTodos
+      ? query(collection(db, "atendimentosOdonto"), orderBy("createdAt", "desc"))
+      : query(collection(db, "atendimentosOdonto"), where("profissionalId", "==", uid), orderBy("createdAt", "desc"));
+
+    const unsubAt = onSnapshot(qAt, (snap) =>
+      setAtendimentos(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
     );
 
     const unsubProc = onSnapshot(
@@ -175,14 +190,28 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
       unsubAt();
       unsubProc();
     };
-  }, []);
+  }, [firebaseUser?.uid, userData?.role, isAdmin]);
 
   // ── Computed ────────────────────────────────────────────────────────────────
   const hoje = getDataHoje();
 
+  const agendamentosFiltrados = useMemo(() => {
+    const role = userData?.role || "";
+    if (isAdmin || role === "admin" || role === "recepcao") return agendamentos;
+    const uid = firebaseUser?.uid || "";
+    if (!uid) return [];
+    const nome = (userData?.nome || userData?.name || "").toLowerCase().trim();
+    return agendamentos.filter((ag) => {
+      const pid = (ag.profissionalId || ag.profissionalUid || "").trim();
+      if (pid) return pid === uid;
+      if (!nome) return false;
+      return (ag.profissionalNome || "").toLowerCase().trim() === nome;
+    });
+  }, [agendamentos, userData, firebaseUser, isAdmin]);
+
   const agendamentosHoje = useMemo(
-    () => agendamentos.filter((a) => a.data === hoje),
-    [agendamentos, hoje]
+    () => agendamentosFiltrados.filter((a) => a.data === hoje),
+    [agendamentosFiltrados, hoje]
   );
 
   const filaAguardando = useMemo(
@@ -260,14 +289,14 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
         tipoAtendimento: ag.tipoAtendimento || "Consulta",
         observacoesRecepcao: ag.observacoes || ag.observacoesRecepcao || "",
         status: "aguardando",
-        statusPagamento: ag.pagamentoId ? "pendente" : "",
+        statusPagamento: ag.statusPagamento || (ag.pagamentoId ? "pendente" : ""),
         anamnese: null,
         procedimentosSolicitados: ag.procedimentosSolicitados || [],
         procedimentosRealizados: [],
         total: ag.valorEstimado || 0,
         desconto: 0,
         valorFinal: ag.valorEstimado || 0,
-        financeiroStatus: ag.pagamentoId ? "pendente" : "",
+        financeiroStatus: ag.statusPagamento || (ag.pagamentoId ? "pendente" : ""),
         pagamentoId: ag.pagamentoId || "",
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -1343,7 +1372,7 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
               </tr>
             </thead>
             <tbody>
-              {agendamentos.map((ag) => (
+              {agendamentosFiltrados.map((ag) => (
                 <tr key={ag.id}>
                   <td>{ag.hora || "—"}</td>
                   <td>{ag.pacienteNome || "—"}</td>
@@ -1376,8 +1405,15 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
                   </td>
                   <td>
                     {ag.pagamentoId ? (
-                      <span style={{ fontSize: "12px", background: "#fffbeb", color: "#d97706", border: "1px solid #fde68a", borderRadius: "6px", padding: "2px 7px" }}>
-                        ⏳ Pendente
+                      <span style={{
+                        fontSize: "12px",
+                        background: ag.statusPagamento === "pago" ? "#f0fdf4" : "#fffbeb",
+                        color: ag.statusPagamento === "pago" ? "#16a34a" : "#d97706",
+                        border: `1px solid ${ag.statusPagamento === "pago" ? "#86efac" : "#fde68a"}`,
+                        borderRadius: "6px",
+                        padding: "2px 7px",
+                      }}>
+                        {ag.statusPagamento === "pago" ? "✓ Pago" : "⏳ Pendente"}
                       </span>
                     ) : (
                       <span style={{ color: "#94a3b8", fontSize: "12px" }}>—</span>
@@ -1407,7 +1443,7 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
                   </td>
                 </tr>
               ))}
-              {agendamentos.length === 0 && (
+              {agendamentosFiltrados.length === 0 && (
                 <tr>
                   <td colSpan="7" style={{ textAlign: "center", color: "#64748b" }}>
                     Nenhum agendamento cadastrado.

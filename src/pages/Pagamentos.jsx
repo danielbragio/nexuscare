@@ -3,11 +3,13 @@ import {
   addDoc,
   collection,
   doc,
+  getDocs,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
   updateDoc,
+  where,
 } from "firebase/firestore";
 
 import { db } from "../services/firebase";
@@ -281,6 +283,7 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentoCh
       setSalvandoPagamento(true);
 
       if (pagamentoIdParaAtualizar) {
+        const statusNorm = pagamento.statusPagamento.toLowerCase();
         await updateDoc(doc(db, "pagamentos", pagamentoIdParaAtualizar), {
           paciente: pagamento.paciente,
           cpf: pagamento.cpf || "",
@@ -290,12 +293,42 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentoCh
           valor: valorNumerico,
           formaPagamento: pagamento.formaPagamento,
           statusPagamento: pagamento.statusPagamento,
-          status: pagamento.statusPagamento.toLowerCase(),
+          status: statusNorm,
           dataPagamento: pagamento.dataPagamento,
           observacoes: pagamento.observacoes || "",
           atualizadoPor: userData?.nome || userData?.name || firebaseUser?.email || "Usuário",
           atualizadoEm: serverTimestamp(),
         });
+
+        // Sincroniza status no documento do agendamento vinculado
+        if (pagamentoCheckout?.atendimentoId) {
+          const colecao =
+            pagamentoCheckout.tipo === "odonto" ? "agendamentosOdonto" : "appointments";
+          await updateDoc(doc(db, colecao, pagamentoCheckout.atendimentoId), {
+            statusPagamento: statusNorm,
+            atualizadoEm: serverTimestamp(),
+          });
+        }
+
+        // Caso o dentista já tenha movido para a fila antes do pagamento:
+        // atualiza também o atendimentosOdonto vinculado pelo pagamentoId
+        if (pagamentoCheckout?.tipo === "odonto") {
+          try {
+            const snapAt = await getDocs(
+              query(
+                collection(db, "atendimentosOdonto"),
+                where("pagamentoId", "==", pagamentoIdParaAtualizar)
+              )
+            );
+            for (const d of snapAt.docs) {
+              await updateDoc(doc(db, "atendimentosOdonto", d.id), {
+                statusPagamento: statusNorm,
+                financeiroStatus: statusNorm,
+                atualizadoEm: serverTimestamp(),
+              });
+            }
+          } catch (_) {}
+        }
       } else {
         await addDoc(collection(db, "pagamentos"), {
           pacienteId: pagamento.pacienteId || "",

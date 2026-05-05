@@ -86,11 +86,6 @@ export default function Agendamentos({
   const [busca, setBusca] = useState("");
   const [filtroTipo, setFiltroTipo] = useState("todos");
 
-  const isMedico =
-    userData?.role === "medico" ||
-    userData?.role === "médico" ||
-    userData?.permissions?.includes?.("medicos");
-
   const identificadoresUsuario = useMemo(() => {
     return [
       userData?.nome,
@@ -135,27 +130,36 @@ export default function Agendamentos({
   }, [agendamentosOdonto]);
 
   function pertenceAoProfissionalLogado(consulta) {
-    if (!isMedico) return true;
-    const ids = [
+    const role = userData?.role || "";
+    const podeVerTodos =
+      role === "admin" ||
+      role === "recepcao" ||
+      role === "financeiro" ||
+      role === "estoque" ||
+      role === "enfermagem" ||
+      (Array.isArray(userData?.permissions) && userData.permissions.includes("administracao"));
+    if (podeVerTodos) return true;
+    const uid = firebaseUser?.uid || "";
+    if (!uid) return false;
+    const idConsulta = (consulta.medicoId || consulta.profissionalId || "").trim();
+    if (idConsulta) return idConsulta === uid;
+    // Name-based fallback — exact match only, for legacy entries without IDs
+    const nomes = [
       consulta.medico,
       consulta.profissional,
       consulta.profissionalNome,
       consulta.medicoNome,
-      consulta.medicoEmail,
-      consulta.profissionalEmail,
     ]
       .filter(Boolean)
       .map(normalizarTexto);
-    return ids.some((v) =>
-      identificadoresUsuario.some((u) => v === u || v.includes(u) || u.includes(v))
-    );
+    return nomes.some((v) => identificadoresUsuario.some((u) => v === u));
   }
 
   // Combine and filter
   const todasConsultas = useMemo(() => {
     const todas = [...consultasMedNorm, ...consultasOdontoNorm];
     return todas.filter(pertenceAoProfissionalLogado);
-  }, [consultasMedNorm, consultasOdontoNorm, identificadoresUsuario, isMedico]);
+  }, [consultasMedNorm, consultasOdontoNorm, identificadoresUsuario, userData, firebaseUser]);
 
   const consultasAtivas = useMemo(() => {
     return todasConsultas.filter((c) => normalizarStatus(c.status) !== "finalizado");

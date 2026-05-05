@@ -1,6 +1,13 @@
 import { useMemo, useState } from "react";
+import { useAuth } from "../context/AuthContext";
 
 export default function Prontuario({ consultas = [], atendimentosOdonto = [] }) {
+  const { userData, firebaseUser } = useAuth();
+  const isAdmin =
+    userData?.role === "admin" ||
+    (Array.isArray(userData?.permissions) && userData.permissions.includes("administracao"));
+  const isMedico = userData?.role === "medico" || userData?.role === "médico";
+
   const [busca, setBusca] = useState("");
   const [filtroProfissional, setFiltroProfissional] = useState("");
   const [filtroEspecialidade, setFiltroEspecialidade] = useState("");
@@ -9,14 +16,25 @@ export default function Prontuario({ consultas = [], atendimentosOdonto = [] }) 
   const [abaDetalhe, setAbaDetalhe] = useState("resumo");
 
   const prontuarios = useMemo(() => {
-    return consultas
+    const base = consultas
       .filter((item) => item.status === "Finalizado" && item.prontuario)
       .sort((a, b) => {
         const dataA = new Date(a.data || 0).getTime();
         const dataB = new Date(b.data || 0).getTime();
         return dataB - dataA;
       });
-  }, [consultas]);
+    if (isAdmin) return base;
+    if (isMedico && firebaseUser?.uid) {
+      const uid = firebaseUser.uid;
+      const nome = (userData?.nome || userData?.name || "").toLowerCase().trim();
+      return base.filter(
+        (item) =>
+          item.medicoId === uid ||
+          (item.medico || "").toLowerCase().trim() === nome
+      );
+    }
+    return base;
+  }, [consultas, isAdmin, isMedico, firebaseUser, userData]);
 
   const profissionais = useMemo(() => {
     return [...new Set(prontuarios.map((item) => item.medico).filter(Boolean))];

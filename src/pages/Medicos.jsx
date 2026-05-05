@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useAuth } from "../context/AuthContext";
 
 function normalizarTipo(tipo) {
   const texto = (tipo || "").toString().trim().toLowerCase();
@@ -38,6 +39,7 @@ export default function Medicos({
   onSalvarProntuario,
   onFinalizarAtendimento,
 }) {
+  const { firebaseUser, userData } = useAuth();
   const [busca, setBusca] = useState("");
   const [abaLista, setAbaLista] = useState("agendados");
   const [consultaSelecionada, setConsultaSelecionada] = useState(null);
@@ -87,18 +89,25 @@ export default function Medicos({
   }, [pagamentos]);
 
   const consultasAtivas = useMemo(() => {
+    const role = userData?.role || "";
+    const isAdmin = role === "admin" || (Array.isArray(userData?.permissions) && userData.permissions.includes("administracao"));
+    const isRecepcao = role === "recepcao";
+    const uid = firebaseUser?.uid || "";
+    const nome = (userData?.nome || userData?.name || "").toLowerCase().trim();
     return ordenarConsultas(
       consultas.filter((item) => {
         if (normalizarStatus(item.status) === "finalizado") return false;
-        // Payment gate: if the consulta has a pagamentoId, only show if payment is confirmed
-        if (item.pagamentoId) {
-          return consultasComPagamentoConfirmado.has(item.id);
-        }
-        // Legacy data without pagamentoId: show always (don't break old records)
-        return true;
+        if (item.pagamentoId && !consultasComPagamentoConfirmado.has(item.id)) return false;
+        if (isAdmin || isRecepcao) return true;
+        if (!uid) return false;
+        const medicoId = (item.medicoId || item.profissionalId || item.profissionalUid || "").trim();
+        if (medicoId) return medicoId === uid;
+        if (!nome) return false;
+        const medicoNome = (item.medico || item.profissionalNome || "").toLowerCase().trim();
+        return medicoNome === nome;
       })
     );
-  }, [consultas, consultasComPagamentoConfirmado]);
+  }, [consultas, consultasComPagamentoConfirmado, userData, firebaseUser]);
 
   const consultasFiltradas = useMemo(() => {
     return consultasAtivas.filter((item) =>
