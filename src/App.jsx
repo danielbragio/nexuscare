@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   LayoutDashboard,
   Users,
@@ -339,6 +339,93 @@ export default function App() {
   const [atendimentosOdonto, setAtendimentosOdonto] = useState([]);
   const [procedimentosOdonto, setProcedimentosOdonto] = useState([]);
   const [dataLoading, setDataLoading] = useState(true);
+
+  // ── Busca global ─────────────────────────────────────────────────────────────
+  const [buscaGlobal, setBuscaGlobal] = useState("");
+  const [buscaGlobalAberta, setBuscaGlobalAberta] = useState(false);
+  const refBuscaGlobal = useRef(null);
+
+  useEffect(() => {
+    function fecharBusca(e) {
+      if (refBuscaGlobal.current && !refBuscaGlobal.current.contains(e.target)) {
+        setBuscaGlobalAberta(false);
+      }
+    }
+    document.addEventListener("mousedown", fecharBusca);
+    return () => document.removeEventListener("mousedown", fecharBusca);
+  }, []);
+
+  const resultadosBusca = useMemo(() => {
+    const termo = buscaGlobal.trim();
+    if (!termo || termo.length < 2) return [];
+    const norm = (str) =>
+      String(str || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+    const t = norm(termo);
+    const inclui = (str) => norm(str).includes(t);
+    const lista = [];
+
+    pacientes.forEach((p) => {
+      if (inclui(p.nome) || inclui(p.cpf) || inclui(p.telefone) || inclui(p.email)) {
+        lista.push({
+          id: `pac-${p.id}`,
+          titulo: p.nome || "Paciente sem nome",
+          tipo: "Paciente",
+          descricao: [p.cpf && `CPF: ${p.cpf}`, p.telefone && `Tel: ${p.telefone}`].filter(Boolean).join(" · ") || "—",
+          cor: "#2563eb", icone: "👤", view: "pacientes",
+        });
+      }
+    });
+
+    consultas.forEach((c) => {
+      if (inclui(c.paciente) || inclui(c.nomePaciente) || inclui(c.medico) || inclui(c.especialidade) || inclui(c.status)) {
+        lista.push({
+          id: `con-${c.id}`,
+          titulo: c.paciente || c.nomePaciente || "Consulta",
+          tipo: "Agendamento",
+          descricao: [c.medico && `Dr(a). ${c.medico}`, c.especialidade, c.data, c.status].filter(Boolean).join(" · "),
+          cor: "#7c3aed", icone: "📅", view: "agendamentos",
+        });
+      }
+    });
+
+    pagamentos.forEach((p) => {
+      if (inclui(p.paciente) || inclui(p.nomePaciente) || inclui(p.status) || inclui(p.statusPagamento) || inclui(p.descricao) || inclui(p.servico)) {
+        lista.push({
+          id: `pag-${p.id}`,
+          titulo: p.paciente || p.nomePaciente || "Pagamento",
+          tipo: "Pagamento",
+          descricao: [p.descricao || p.servico, p.valor != null && `R$ ${Number(p.valor).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`, p.statusPagamento || p.status].filter(Boolean).join(" · "),
+          cor: "#0f766e", icone: "💰", view: "financeiro",
+        });
+      }
+    });
+
+    users.forEach((u) => {
+      if (inclui(u.nome) || inclui(u.name) || inclui(u.email) || inclui(u.especialidade) || inclui(u.role)) {
+        lista.push({
+          id: `usr-${u.id}`,
+          titulo: u.nome || u.name || u.email || "Profissional",
+          tipo: "Profissional",
+          descricao: [u.role, u.especialidade, u.email].filter(Boolean).join(" · "),
+          cor: "#d97706", icone: "👨‍⚕️", view: "admin",
+        });
+      }
+    });
+
+    atendimentosOdonto.forEach((at) => {
+      if (inclui(at.pacienteNome) || inclui(at.profissionalNome) || inclui(at.status) || inclui(at.tipoAtendimento)) {
+        lista.push({
+          id: `ato-${at.id}`,
+          titulo: at.pacienteNome || "Atendimento odontológico",
+          tipo: "Odontologia",
+          descricao: [at.profissionalNome && `Dr(a). ${at.profissionalNome}`, at.tipoAtendimento, at.status].filter(Boolean).join(" · "),
+          cor: "#0d9488", icone: "🦷", view: "odonto",
+        });
+      }
+    });
+
+    return lista.slice(0, 10);
+  }, [buscaGlobal, pacientes, consultas, pagamentos, users, atendimentosOdonto]);
 
   const isMedico =
     userData?.role === "medico" ||
@@ -1052,7 +1139,7 @@ export default function App() {
           </div>
 
           <div className="topbar-right">
-            <div className="topbar-search">
+            <div className="topbar-search" ref={refBuscaGlobal} style={{ position: "relative" }}>
               <span className="topbar-search-icon">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <circle cx="11" cy="11" r="8"/>
@@ -1063,16 +1150,80 @@ export default function App() {
                 className="topbar-search-input"
                 type="text"
                 placeholder="Buscar no sistema..."
+                value={buscaGlobal}
+                onChange={(e) => { setBuscaGlobal(e.target.value); setBuscaGlobalAberta(true); }}
+                onFocus={() => setBuscaGlobalAberta(true)}
+                autoComplete="off"
               />
-            </div>
 
-            <div className="topbar-user">
-              <div className="topbar-user-avatar">
-                {(userData?.nome || userData?.name || firebaseUser?.email || "U").charAt(0).toUpperCase()}
-              </div>
-              <span className="topbar-badge">
-                {userData?.name || userData?.nome || firebaseUser?.email || "Usuário"}
-              </span>
+              {buscaGlobalAberta && buscaGlobal.length >= 2 && (
+                <div style={{
+                  position: "absolute",
+                  top: "calc(100% + 8px)",
+                  left: 0,
+                  right: 0,
+                  minWidth: "380px",
+                  background: "#fff",
+                  borderRadius: "12px",
+                  boxShadow: "0 8px 32px rgba(0,0,0,0.16)",
+                  border: "1px solid #e2e8f0",
+                  zIndex: 9999,
+                  maxHeight: "400px",
+                  overflowY: "auto",
+                }}>
+                  {resultadosBusca.length === 0 ? (
+                    <div style={{ padding: "24px 16px", textAlign: "center", color: "#94a3b8", fontSize: "13px" }}>
+                      <div style={{ fontSize: "28px", marginBottom: "8px" }}>🔍</div>
+                      Nenhum resultado encontrado para <strong>"{buscaGlobal}"</strong>.
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{ padding: "8px 14px 4px", fontSize: "11px", fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                        {resultadosBusca.length} resultado{resultadosBusca.length !== 1 ? "s" : ""} encontrado{resultadosBusca.length !== 1 ? "s" : ""}
+                      </div>
+                      {resultadosBusca.map((r) => (
+                        <div
+                          key={r.id}
+                          style={{
+                            padding: "10px 14px",
+                            cursor: "pointer",
+                            borderTop: "1px solid #f1f5f9",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "12px",
+                          }}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = "#f8fafc"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = ""; }}
+                          onClick={() => {
+                            setView(r.view);
+                            setBuscaGlobal("");
+                            setBuscaGlobalAberta(false);
+                          }}
+                        >
+                          <span style={{ fontSize: "18px", flexShrink: 0 }}>{r.icone}</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: "13px", color: "#1e293b", marginBottom: "1px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {r.titulo}
+                            </div>
+                            <div style={{ fontSize: "12px", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {r.descricao}
+                            </div>
+                          </div>
+                          <span style={{
+                            fontSize: "11px", fontWeight: 700, flexShrink: 0,
+                            color: r.cor,
+                            background: r.cor + "18",
+                            border: `1px solid ${r.cor}33`,
+                            borderRadius: "6px", padding: "2px 8px",
+                          }}>
+                            {r.tipo}
+                          </span>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
 
             <button className="secondary-btn" onClick={sairSistema}>
