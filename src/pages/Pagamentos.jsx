@@ -54,6 +54,43 @@ function obterDataHoje() {
   return `${ano}-${mes}-${dia}`;
 }
 
+async function sincMovimentacao(db, docId, pagamento, valor, statusNorm, userData, firebaseUser) {
+  try {
+    const snap = await getDocs(
+      query(
+        collection(db, "movimentacoes"),
+        where("referenciaId", "==", docId),
+        where("origem", "==", "pagamentos")
+      )
+    );
+    const dados = {
+      referenciaId: docId,
+      origem: "pagamentos",
+      tipo: "Receita",
+      categoria: "Receita",
+      descricao: pagamento.tipoAtendimento || "",
+      valor,
+      data: pagamento.dataPagamento || "",
+      nomePaciente: pagamento.paciente || "",
+      formaPagamento: pagamento.formaPagamento || "",
+      status: statusNorm,
+      atualizadoEm: serverTimestamp(),
+    };
+    if (!snap.empty) {
+      await updateDoc(doc(db, "movimentacoes", snap.docs[0].id), dados);
+    } else {
+      await addDoc(collection(db, "movimentacoes"), {
+        ...dados,
+        criadoEm: serverTimestamp(),
+        criadoPor: userData?.nome || userData?.name || firebaseUser?.email || "Usuário",
+        criadoPorEmail: firebaseUser?.email || "",
+      });
+    }
+  } catch (e) {
+    console.error("Erro ao sincronizar movimentação:", e);
+  }
+}
+
 export default function Pagamentos({ pacientes = [], consultas = [], pagamentoCheckout = null, onLimparCheckout }) {
   const { userData, firebaseUser } = useAuth();
 
@@ -329,8 +366,13 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentoCh
             }
           } catch (_) {}
         }
+
+        if (statusNorm === "pago" || statusNorm === "paga") {
+          await sincMovimentacao(db, pagamentoIdParaAtualizar, pagamento, valorNumerico, statusNorm, userData, firebaseUser);
+        }
       } else {
-        await addDoc(collection(db, "pagamentos"), {
+        const statusNorm = pagamento.statusPagamento.toLowerCase();
+        const docRef = await addDoc(collection(db, "pagamentos"), {
           pacienteId: pagamento.pacienteId || "",
           paciente: pagamento.paciente,
           cpf: pagamento.cpf || "",
@@ -340,14 +382,25 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentoCh
           valor: valorNumerico,
           formaPagamento: pagamento.formaPagamento,
           statusPagamento: pagamento.statusPagamento,
+          status: statusNorm,
           dataPagamento: pagamento.dataPagamento,
+          data: pagamento.dataPagamento,
+          nomePaciente: pagamento.paciente,
+          descricao: pagamento.tipoAtendimento,
+          tipo: "Entrada",
+          categoria: "Receita",
           observacoes: pagamento.observacoes || "",
           origem: "Pagamentos",
           tipoMovimentacao: "Receita",
           criadoPor: userData?.nome || userData?.name || firebaseUser?.email || "Usuário",
           criadoPorEmail: firebaseUser?.email || "",
           criadoEm: serverTimestamp(),
+          createdAt: serverTimestamp(),
         });
+
+        if (statusNorm === "pago" || statusNorm === "paga") {
+          await sincMovimentacao(db, docRef.id, pagamento, valorNumerico, statusNorm, userData, firebaseUser);
+        }
       }
 
       setPagamentoIdParaAtualizar(null);

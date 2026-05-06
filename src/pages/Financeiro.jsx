@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addDoc,
   collection,
@@ -18,6 +18,115 @@ import {
 } from "firebase/storage";
 import { db, storage } from "../services/firebase";
 
+const METRICA_COR = { receita: "#10b981", despesa: "#ef4444", saldo: "#6366f1" };
+
+function parseDateF(str) {
+  if (!str) return null;
+  const d = new Date(`${String(str).slice(0, 10)}T00:00:00`);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function LineChart({ dados, metrica, cor, formatMoeda }) {
+  const [hoverIdx, setHoverIdx] = useState(null);
+  const svgRef = useRef(null);
+
+  const W = 900, H = 230, padL = 56, padR = 24, padT = 20, padB = 38;
+  const chartW = W - padL - padR;
+  const chartH = H - padT - padB;
+
+  const vals = dados.map(d => d[metrica]);
+  const rawMax = Math.max(...vals, 0);
+  const rawMin = Math.min(...vals, 0);
+  const yPad = Math.max((rawMax - rawMin) * 0.15, rawMax * 0.1, 10);
+  const yMax = rawMax + yPad;
+  const yMin = rawMin < 0 ? rawMin - yPad : 0;
+  const yRange = yMax - yMin || 1;
+
+  const toX = (i) => padL + (i / (dados.length - 1 || 1)) * chartW;
+  const toY = (v) => padT + (1 - (v - yMin) / yRange) * chartH;
+  const pts = dados.map((d, i) => ({ x: toX(i), y: toY(d[metrica]) }));
+
+  const linePath = (() => {
+    if (pts.length < 2) return pts.length === 1 ? `M ${pts[0].x},${pts[0].y}` : "";
+    const segs = [`M ${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}`];
+    const t = 0.3;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)];
+      segs.push(`C ${(p1.x + t * (p2.x - p0.x)).toFixed(1)},${(p1.y + t * (p2.y - p0.y)).toFixed(1)} ${(p2.x - t * (p3.x - p1.x)).toFixed(1)},${(p2.y - t * (p3.y - p1.y)).toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`);
+    }
+    return segs.join(" ");
+  })();
+
+  const zeroY = toY(Math.max(yMin, 0));
+  const areaPath = pts.length > 1 ? `${linePath} L ${pts[pts.length - 1].x.toFixed(1)},${zeroY.toFixed(1)} L ${pts[0].x.toFixed(1)},${zeroY.toFixed(1)} Z` : "";
+  const gridVals = [yMax, (yMax + yMin) / 2, yMin];
+  const step = Math.max(1, Math.floor(dados.length / 6));
+  const xLabels = dados.map((d, i) => ({ i, label: d.data.slice(5).replace("-", "/") })).filter(({ i }) => i === 0 || i === dados.length - 1 || i % step === 0);
+  const gradId = `sp-${metrica}`;
+
+  const hoverPt = hoverIdx !== null ? pts[hoverIdx] : null;
+  let ttX = hoverPt ? hoverPt.x : 0, ttY = hoverPt ? Math.max(padT, hoverPt.y - 58) : 0;
+  if (ttX + 138 > W) ttX = W - 142;
+  if (ttX < padL) ttX = padL;
+
+  function handleMove(e) {
+    if (!svgRef.current) return;
+    const r = svgRef.current.getBoundingClientRect();
+    const mx = ((e.clientX - r.left) / r.width) * W;
+    if (mx < padL || mx > W - padR) { setHoverIdx(null); return; }
+    setHoverIdx(Math.max(0, Math.min(dados.length - 1, Math.round(((mx - padL) / chartW) * (dados.length - 1)))));
+  }
+
+  function fmtK(v) {
+    const abs = Math.abs(v), s = v < 0 ? "-" : "";
+    if (abs >= 1e6) return `${s}R$${(abs / 1e6).toFixed(1)}M`;
+    if (abs >= 1000) return `${s}R$${(abs / 1000).toFixed(0)}k`;
+    return `${s}R$${abs.toFixed(0)}`;
+  }
+
+  return (
+    <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block", cursor: "crosshair", userSelect: "none" }}
+      onMouseMove={handleMove} onMouseLeave={() => setHoverIdx(null)}>
+      <defs>
+        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={cor} stopOpacity="0.15" />
+          <stop offset="75%" stopColor={cor} stopOpacity="0.03" />
+          <stop offset="100%" stopColor={cor} stopOpacity="0" />
+        </linearGradient>
+        <filter id="tt-sh" x="-15%" y="-25%" width="130%" height="160%">
+          <feDropShadow dx="0" dy="3" stdDeviation="6" floodColor="rgba(0,0,0,0.1)" />
+        </filter>
+      </defs>
+      {gridVals.map((v, i) => (
+        <line key={i} x1={padL} y1={toY(v)} x2={W - padR} y2={toY(v)}
+          stroke={v === 0 && yMin < 0 ? "rgba(148,163,184,0.3)" : "rgba(226,232,240,0.55)"}
+          strokeWidth={v === 0 && yMin < 0 ? "1.5" : "1"}
+          strokeDasharray={v === 0 && yMin < 0 ? "4,3" : "0"} />
+      ))}
+      {areaPath && <path d={areaPath} fill={`url(#${gradId})`} />}
+      {linePath && <path d={linePath} fill="none" stroke={cor} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />}
+      {hoverPt && <line x1={hoverPt.x} y1={padT} x2={hoverPt.x} y2={H - padB} stroke="rgba(148,163,184,0.4)" strokeWidth="1" strokeDasharray="3,2" />}
+      {hoverPt && <>
+        <circle cx={hoverPt.x} cy={hoverPt.y} r="7" fill={cor} opacity="0.15" />
+        <circle cx={hoverPt.x} cy={hoverPt.y} r="4.5" fill={cor} />
+        <circle cx={hoverPt.x} cy={hoverPt.y} r="2" fill="white" />
+      </>}
+      {hoverPt && hoverIdx !== null && <>
+        <rect x={ttX} y={ttY} width="138" height="52" rx="10" fill="white" filter="url(#tt-sh)" />
+        <rect x={ttX} y={ttY} width="138" height="52" rx="10" fill="none" stroke="rgba(0,0,0,0.06)" strokeWidth="1" />
+        <text x={ttX + 12} y={ttY + 18} fontSize="10" fill="#94a3b8" fontWeight="500">{dados[hoverIdx].data.slice(5).replace("-", "/")}</text>
+        <text x={ttX + 12} y={ttY + 38} fontSize="14" fontWeight="700" fill={cor}>{formatMoeda ? formatMoeda(dados[hoverIdx][metrica]) : fmtK(dados[hoverIdx][metrica])}</text>
+      </>}
+      {xLabels.map(({ i, label }) => (
+        <text key={i} x={toX(i)} y={H - 8} textAnchor="middle" fontSize="10" fill="rgba(148,163,184,0.85)">{label}</text>
+      ))}
+      {gridVals.map((v, i) => (
+        <text key={i} x={padL - 8} y={toY(v) + 4} textAnchor="end" fontSize="10" fill="rgba(148,163,184,0.85)">{fmtK(v)}</text>
+      ))}
+    </svg>
+  );
+}
+
 export default function Financeiro() {
   const [abaAtiva, setAbaAtiva] = useState("resumo");
   const [pagamentos, setPagamentos] = useState([]);
@@ -25,6 +134,11 @@ export default function Financeiro() {
   const [anexosFinanceiros, setAnexosFinanceiros] = useState([]);
   const [historicoFinanceiro, setHistoricoFinanceiro] = useState([]);
   const [carregando, setCarregando] = useState(true);
+
+  const [periodo, setPeriodo] = useState("30dias");
+  const [periodoCustomInicio, setPeriodoCustomInicio] = useState("");
+  const [periodoCustomFim, setPeriodoCustomFim] = useState("");
+  const [chartMetrica, setChartMetrica] = useState("receita");
 
   const [contaSelecionada, setContaSelecionada] = useState(null);
   const [modoEdicao, setModoEdicao] = useState(false);
@@ -772,6 +886,122 @@ export default function Financeiro() {
     return Object.entries(mapa).map(([forma, valor]) => ({ forma, valor }));
   }, [pagamentos]);
 
+  const rangePeriodo = useMemo(() => {
+    const hoje = new Date();
+    const fimDia = new Date(hoje);
+    fimDia.setHours(23, 59, 59, 999);
+    if (periodo === "hoje") {
+      const ini = new Date(hoje);
+      ini.setHours(0, 0, 0, 0);
+      return { ini, fim: fimDia };
+    }
+    if (periodo === "7dias") {
+      const ini = new Date(hoje);
+      ini.setDate(ini.getDate() - 6);
+      ini.setHours(0, 0, 0, 0);
+      return { ini, fim: fimDia };
+    }
+    if (periodo === "custom" && periodoCustomInicio && periodoCustomFim) {
+      return {
+        ini: new Date(`${periodoCustomInicio}T00:00:00`),
+        fim: new Date(`${periodoCustomFim}T23:59:59`),
+      };
+    }
+    const ini = new Date(hoje);
+    ini.setDate(ini.getDate() - 29);
+    ini.setHours(0, 0, 0, 0);
+    return { ini, fim: fimDia };
+  }, [periodo, periodoCustomInicio, periodoCustomFim]);
+
+  const kpisDashboard = useMemo(() => {
+    const { ini, fim } = rangePeriodo;
+    const pagsFiltrados = pagamentos.filter(p => {
+      const d = parseDateF(p.dataPagamento || p.data);
+      return d && d >= ini && d <= fim;
+    });
+    const despFiltradas = contasPagar.filter(c => {
+      const d = parseDateF(c.dataPagamento || c.dataVencimento);
+      return d && d >= ini && d <= fim;
+    });
+    const receita = pagsFiltrados
+      .filter(p => (p.statusPagamento || p.status || "").toLowerCase() === "pago")
+      .reduce((t, p) => t + Number(p.valor || 0), 0);
+    const despesas = despFiltradas
+      .filter(c => c.status === "Pago")
+      .reduce((t, c) => t + Number(c.valorPago || c.valorLiquidoPagar || c.valorBruto || 0), 0);
+    const pendentes = pagamentos
+      .filter(p => (p.statusPagamento || p.status || "").toLowerCase() === "pendente")
+      .reduce((t, p) => t + Number(p.valor || 0), 0);
+    return { receita, despesas, saldo: receita - despesas, pendentes };
+  }, [pagamentos, contasPagar, rangePeriodo]);
+
+  const chartDados = useMemo(() => {
+    const { ini, fim } = rangePeriodo;
+    const dias = [];
+    const cur = new Date(ini);
+    cur.setHours(0, 0, 0, 0);
+    while (cur <= fim) {
+      dias.push(cur.toISOString().slice(0, 10));
+      cur.setDate(cur.getDate() + 1);
+    }
+    return dias.map(diaStr => {
+      const receita = pagamentos
+        .filter(p => (p.dataPagamento || p.data || "").slice(0, 10) === diaStr && (p.statusPagamento || p.status || "").toLowerCase() === "pago")
+        .reduce((t, p) => t + Number(p.valor || 0), 0);
+      const despesa = contasPagar
+        .filter(c => (c.dataPagamento || c.dataVencimento || "").slice(0, 10) === diaStr && c.status === "Pago")
+        .reduce((t, c) => t + Number(c.valorPago || c.valorLiquidoPagar || c.valorBruto || 0), 0);
+      return { data: diaStr, receita, despesa, saldo: receita - despesa };
+    });
+  }, [pagamentos, contasPagar, rangePeriodo]);
+
+  const receitaPorOrigem = useMemo(() => {
+    const { ini, fim } = rangePeriodo;
+    const mapa = {};
+    pagamentos
+      .filter(p => {
+        const d = parseDateF(p.dataPagamento || p.data);
+        return d && d >= ini && d <= fim && (p.statusPagamento || p.status || "").toLowerCase() === "pago";
+      })
+      .forEach(p => {
+        const o = p.origem === "odonto" ? "Odontologia" : (p.origem || "Recepção");
+        mapa[o] = (mapa[o] || 0) + Number(p.valor || 0);
+      });
+    return Object.entries(mapa).map(([origem, valor]) => ({ origem, valor })).sort((a, b) => b.valor - a.valor);
+  }, [pagamentos, rangePeriodo]);
+
+  const despesaPorCategoria = useMemo(() => {
+    const { ini, fim } = rangePeriodo;
+    const mapa = {};
+    contasPagar
+      .filter(c => {
+        const d = parseDateF(c.dataPagamento || c.dataVencimento);
+        return d && d >= ini && d <= fim && c.status === "Pago";
+      })
+      .forEach(c => {
+        const cat = c.categoria || "Outros";
+        mapa[cat] = (mapa[cat] || 0) + Number(c.valorPago || c.valorLiquidoPagar || c.valorBruto || 0);
+      });
+    return Object.entries(mapa).map(([categoria, valor]) => ({ categoria, valor })).sort((a, b) => b.valor - a.valor);
+  }, [contasPagar, rangePeriodo]);
+
+  const ultTransacoes = useMemo(() => {
+    const { ini, fim } = rangePeriodo;
+    return movimentacoes
+      .filter(m => {
+        const d = parseDateF(m.data);
+        return d && d >= ini && d <= fim;
+      })
+      .slice(0, 8);
+  }, [movimentacoes, rangePeriodo]);
+
+  const labelPeriodo = useMemo(() => {
+    if (periodo === "hoje") return "Hoje";
+    if (periodo === "7dias") return "Últimos 7 dias";
+    if (periodo === "custom" && periodoCustomInicio && periodoCustomFim) return `${periodoCustomInicio} → ${periodoCustomFim}`;
+    return "Últimos 30 dias";
+  }, [periodo, periodoCustomInicio, periodoCustomFim]);
+
   function limparFornecedor() {
     setFornecedorSelecionado(null);
     setModoEdicaoFornecedor(false);
@@ -840,62 +1070,7 @@ export default function Financeiro() {
 
   return (
     <div className="financeiro-page">
-      <div className="page-header">
-        <h1>Financeiro</h1>
-        <p className="page-subtitle">
-          Controle financeiro integrado com os pagamentos registrados na recepção.
-        </p>
-      </div>
-
-      <div className="stats-grid">
-        <div className="stat-box">
-          <div className="stat-label">Receita do mês</div>
-          <div className="stat-value">
-            {formatarMoeda(dadosFinanceiros.receitaMes)}
-          </div>
-          <div className="stat-info">Pagamentos confirmados</div>
-        </div>
-
-        <div className="stat-box">
-          <div className="stat-label">Despesas do mês</div>
-          <div className="stat-value">
-            {formatarMoeda(dadosFinanceiros.despesasMes)}
-          </div>
-          <div className="stat-info">Contas pagas</div>
-        </div>
-
-        <div className="stat-box">
-          <div className="stat-label">Saldo previsto</div>
-          <div className="stat-value">
-            {formatarMoeda(dadosFinanceiros.saldoPrevisto)}
-          </div>
-          <div className="stat-info">Recebido + pendente - despesas</div>
-        </div>
-
-        <div className="stat-box">
-          <div className="stat-label">Contas vencidas</div>
-          <div className="stat-value">{dadosFinanceiros.contasVencidas}</div>
-          <div className="stat-info">Contas a pagar vencidas</div>
-        </div>
-
-        <div className="stat-box">
-          <div className="stat-label">Contas pendentes</div>
-          <div className="stat-value">
-            {dadosFinanceiros.contasPendentes + dadosFinanceiros.contasPagarPendentes}
-          </div>
-          <div className="stat-info">Receber + pagar</div>
-        </div>
-
-        <div className="stat-box">
-          <div className="stat-label">Contas pagas</div>
-          <div className="stat-value">
-            {dadosFinanceiros.contasPagas + dadosFinanceiros.contasPagarPagas}
-          </div>
-          <div className="stat-info">Recebidas e pagas</div>
-        </div>
-      </div>
-
-      <div className="page-card" style={{ marginTop: "20px" }}>
+      <div className="page-card">
         <div className="patients-tabs">
           <button
             className={`patients-tab ${abaAtiva === "resumo" ? "active" : ""}`}
@@ -958,61 +1133,187 @@ export default function Financeiro() {
         ) : (
           <>
             {abaAtiva === "resumo" && (
-              <div style={{ marginTop: "20px" }}>
-                <h3>Dashboard Financeiro</h3>
+              <div style={{ padding: "28px 0 8px" }}>
 
-                <div className="stats-grid" style={{ marginTop: "16px" }}>
-                  <div className="stat-box">
-                    <div className="stat-label">Receitas</div>
-                    <div className="stat-value">
-                      {formatarMoeda(dadosFinanceiros.receitaMes)}
-                    </div>
-                    <div className="stat-info">Mês atual</div>
+                {/* ── Header ── */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "36px", flexWrap: "wrap", gap: "16px" }}>
+                  <div>
+                    <h1 style={{ margin: 0, fontSize: "26px", fontWeight: 800, letterSpacing: "-0.04em", color: "var(--text)" }}>Visão Financeira</h1>
+                    <p style={{ margin: "5px 0 0", fontSize: "13px", color: "var(--text-muted)" }}>{labelPeriodo}</p>
                   </div>
-
-                  <div className="stat-box">
-                    <div className="stat-label">Despesas</div>
-                    <div className="stat-value">
-                      {formatarMoeda(dadosFinanceiros.despesasMes)}
-                    </div>
-                    <div className="stat-info">Mês atual</div>
+                  <div style={{ display: "flex", background: "var(--bg-muted)", borderRadius: "12px", padding: "3px", gap: "2px" }}>
+                    {[["hoje", "Hoje"], ["7dias", "7 dias"], ["30dias", "30 dias"], ["custom", "Personalizado"]].map(([p, label]) => (
+                      <button key={p} onClick={() => setPeriodo(p)} style={{
+                        padding: "7px 16px", borderRadius: "9px", fontSize: "12px", fontWeight: 600, border: "none", cursor: "pointer",
+                        background: periodo === p ? "var(--bg-card)" : "transparent",
+                        color: periodo === p ? "var(--text)" : "var(--text-muted)",
+                        boxShadow: periodo === p ? "0 1px 3px rgba(0,0,0,0.09), 0 0 0 1px rgba(0,0,0,0.04)" : "none",
+                        transition: "all 0.15s ease",
+                      }}>{label}</button>
+                    ))}
                   </div>
                 </div>
 
-                <h3 style={{ marginTop: "20px" }}>Últimas movimentações</h3>
+                {periodo === "custom" && (
+                  <div style={{ display: "flex", gap: "14px", marginBottom: "28px", flexWrap: "wrap" }}>
+                    <div>
+                      <label style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", display: "block", marginBottom: "6px" }}>Início</label>
+                      <input type="date" className="input" value={periodoCustomInicio} onChange={e => setPeriodoCustomInicio(e.target.value)} style={{ width: "160px" }} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", display: "block", marginBottom: "6px" }}>Fim</label>
+                      <input type="date" className="input" value={periodoCustomFim} onChange={e => setPeriodoCustomFim(e.target.value)} style={{ width: "160px" }} />
+                    </div>
+                  </div>
+                )}
 
-                <div className="table-wrapper">
-                  <table className="table">
-                    <thead>
-                      <tr>
-                        <th>Data</th>
-                        <th>Tipo</th>
-                        <th>Origem</th>
-                        <th>Descrição</th>
-                        <th>Status</th>
-                        <th>Valor</th>
-                      </tr>
-                    </thead>
+                {/* ── KPIs ── */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "18px", marginBottom: "28px" }}>
+                  {[
+                    { title: "Receita Total",  value: kpisDashboard.receita,   color: "#10b981", icon: "↑", sub: "Entradas confirmadas" },
+                    { title: "Despesas",        value: kpisDashboard.despesas,  color: "#f43f5e", icon: "↓", sub: "Saídas pagas" },
+                    { title: "Saldo Atual",     value: kpisDashboard.saldo,     color: kpisDashboard.saldo >= 0 ? "#6366f1" : "#f59e0b", icon: "≡", sub: "Receita − Despesas" },
+                    { title: "Pendências",      value: kpisDashboard.pendentes, color: "#f59e0b", icon: "◷", sub: "Valores a receber" },
+                  ].map(card => (
+                    <div key={card.title} style={{
+                      background: "var(--bg-card)",
+                      borderRadius: "20px",
+                      padding: "24px 24px 20px",
+                      boxShadow: "0 0 0 1px rgba(0,0,0,0.05), 0 2px 4px rgba(0,0,0,0.04), 0 12px 28px rgba(0,0,0,0.05)",
+                    }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "14px" }}>
+                        <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.07em" }}>{card.title}</span>
+                        <div style={{ width: "30px", height: "30px", borderRadius: "9px", background: card.color + "14", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "15px", color: card.color }}>
+                          {card.icon}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: "25px", fontWeight: 800, letterSpacing: "-0.04em", color: "var(--text)", lineHeight: 1, marginBottom: "7px" }}>
+                        {formatarMoeda(card.value)}
+                      </div>
+                      <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{card.sub}</div>
+                    </div>
+                  ))}
+                </div>
 
-                    <tbody>
-                      {movimentacoes.slice(0, 10).map((item) => (
-                        <tr key={item.id}>
-                          <td>{item.data || "—"}</td>
-                          <td>{item.tipo}</td>
-                          <td>{item.origem}</td>
-                          <td>{item.descricao}</td>
-                          <td>{item.status}</td>
-                          <td>{formatarMoeda(item.valor)}</td>
-                        </tr>
+                {/* ── Chart ── */}
+                <div style={{ background: "var(--bg-card)", borderRadius: "20px", padding: "28px 28px 20px", boxShadow: "0 0 0 1px rgba(0,0,0,0.05), 0 2px 4px rgba(0,0,0,0.04), 0 12px 28px rgba(0,0,0,0.05)", marginBottom: "22px" }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "24px", flexWrap: "wrap", gap: "12px" }}>
+                    <div>
+                      <h3 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "var(--text)" }}>Fluxo Financeiro</h3>
+                      <p style={{ margin: "4px 0 0", fontSize: "12px", color: "var(--text-muted)" }}>Evolução diária no período</p>
+                    </div>
+                    <div style={{ display: "flex", gap: "6px" }}>
+                      {[["receita", "#10b981", "Receita"], ["despesa", "#f43f5e", "Despesa"], ["saldo", "#6366f1", "Saldo"]].map(([m, c, lbl]) => (
+                        <button key={m} onClick={() => setChartMetrica(m)} style={{
+                          padding: "5px 14px", borderRadius: "20px", fontSize: "12px", fontWeight: 600, cursor: "pointer",
+                          border: `1.5px solid ${chartMetrica === m ? c : "var(--border)"}`,
+                          background: chartMetrica === m ? c + "12" : "transparent",
+                          color: chartMetrica === m ? c : "var(--text-muted)",
+                          transition: "all 0.15s",
+                        }}>{lbl}</button>
                       ))}
+                    </div>
+                  </div>
+                  {chartDados.length === 1 ? (
+                    <div style={{ textAlign: "center", padding: "44px 0" }}>
+                      <div style={{ fontSize: "40px", fontWeight: 800, letterSpacing: "-0.04em", color: METRICA_COR[chartMetrica] }}>
+                        {formatarMoeda(chartDados[0][chartMetrica])}
+                      </div>
+                      <div style={{ fontSize: "13px", color: "var(--text-muted)", marginTop: "8px" }}>
+                        {chartMetrica.charAt(0).toUpperCase() + chartMetrica.slice(1)} de hoje
+                      </div>
+                    </div>
+                  ) : chartDados.length > 1 ? (
+                    <LineChart dados={chartDados} metrica={chartMetrica} cor={METRICA_COR[chartMetrica]} formatMoeda={formatarMoeda} />
+                  ) : (
+                    <div style={{ textAlign: "center", padding: "52px 0", color: "var(--text-muted)", fontSize: "13px" }}>
+                      Sem dados no período selecionado.
+                    </div>
+                  )}
+                </div>
 
-                      {movimentacoes.length === 0 && (
-                        <tr>
-                          <td colSpan="6">Nenhuma movimentação encontrada.</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
+                {/* ── Widgets ── */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px", marginBottom: "22px" }}>
+                  {[
+                    { title: "Receita por Origem", items: receitaPorOrigem.map(r => ({ label: r.origem, valor: r.valor })), total: kpisDashboard.receita, cor: "#10b981" },
+                    { title: "Despesas por Categoria", items: despesaPorCategoria.map(d => ({ label: d.categoria, valor: d.valor })), total: kpisDashboard.despesas, cor: "#f43f5e" },
+                  ].map(widget => (
+                    <div key={widget.title} style={{ background: "var(--bg-card)", borderRadius: "20px", padding: "24px", boxShadow: "0 0 0 1px rgba(0,0,0,0.05), 0 2px 4px rgba(0,0,0,0.04), 0 12px 28px rgba(0,0,0,0.05)" }}>
+                      <h4 style={{ margin: "0 0 20px", fontSize: "14px", fontWeight: 700, color: "var(--text)" }}>{widget.title}</h4>
+                      {widget.items.length === 0 ? (
+                        <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "12px 0" }}>Sem dados no período.</div>
+                      ) : widget.items.map(({ label, valor }) => {
+                        const pct = widget.total > 0 ? (valor / widget.total) * 100 : 0;
+                        return (
+                          <div key={label} style={{ marginBottom: "16px" }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "7px" }}>
+                              <span style={{ fontSize: "13px", color: "var(--text)", fontWeight: 500 }}>{label}</span>
+                              <div>
+                                <span style={{ fontSize: "13px", fontWeight: 700, color: "var(--text)" }}>{formatarMoeda(valor)}</span>
+                                <span style={{ fontSize: "11px", color: "var(--text-muted)", marginLeft: "6px" }}>{pct.toFixed(0)}%</span>
+                              </div>
+                            </div>
+                            <div style={{ background: "var(--bg-muted)", borderRadius: "4px", height: "4px", overflow: "hidden" }}>
+                              <div style={{ background: widget.cor, width: `${Math.min(pct, 100)}%`, height: "100%", borderRadius: "4px", transition: "width 0.6s ease" }} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+
+                {/* ── Transactions ── */}
+                <div style={{ background: "var(--bg-card)", borderRadius: "20px", padding: "24px", boxShadow: "0 0 0 1px rgba(0,0,0,0.05), 0 2px 4px rgba(0,0,0,0.04), 0 12px 28px rgba(0,0,0,0.05)" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
+                    <div>
+                      <h4 style={{ margin: 0, fontSize: "14px", fontWeight: 700, color: "var(--text)" }}>Movimentações Recentes</h4>
+                      <p style={{ margin: "3px 0 0", fontSize: "12px", color: "var(--text-muted)" }}>Últimas transações do período</p>
+                    </div>
+                    <button onClick={() => setAbaAtiva("movimentacoes")} style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-muted)", background: "transparent", border: "none", cursor: "pointer", padding: "4px 0" }}>
+                      Ver todas →
+                    </button>
+                  </div>
+                  {ultTransacoes.length === 0 ? (
+                    <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "24px 0", textAlign: "center" }}>Nenhuma transação no período.</div>
+                  ) : ultTransacoes.slice(0, 6).map((t, i) => {
+                    const isEntry = t.tipo === "Entrada";
+                    const statusLow = (t.status || "").toLowerCase();
+                    return (
+                      <div key={t.id} style={{
+                        display: "flex", alignItems: "center", gap: "14px", padding: "13px 0",
+                        borderBottom: i < Math.min(ultTransacoes.length, 6) - 1 ? "1px solid var(--border)" : "none",
+                      }}>
+                        <div style={{
+                          width: "38px", height: "38px", borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                          background: isEntry ? "rgba(16,185,129,0.1)" : "rgba(244,63,94,0.1)",
+                          color: isEntry ? "#10b981" : "#f43f5e", fontSize: "16px", fontWeight: 700,
+                        }}>
+                          {isEntry ? "↑" : "↓"}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {t.descricao}
+                          </div>
+                          <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "2px" }}>
+                            {t.pessoa && t.pessoa !== "—" ? `${t.pessoa} · ` : ""}{t.data || "—"}
+                          </div>
+                        </div>
+                        <div style={{ textAlign: "right", flexShrink: 0 }}>
+                          <div style={{ fontSize: "14px", fontWeight: 700, color: isEntry ? "#10b981" : "#f43f5e" }}>
+                            {isEntry ? "+" : "−"}{formatarMoeda(t.valor)}
+                          </div>
+                          <span style={{
+                            display: "inline-block", fontSize: "10px", fontWeight: 600, padding: "2px 8px", borderRadius: "20px", marginTop: "3px",
+                            background: statusLow === "pago" ? "rgba(16,185,129,0.12)" : statusLow === "pendente" ? "rgba(245,158,11,0.12)" : "rgba(148,163,184,0.12)",
+                            color: statusLow === "pago" ? "#10b981" : statusLow === "pendente" ? "#d97706" : "#94a3b8",
+                          }}>
+                            {t.status || "—"}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}

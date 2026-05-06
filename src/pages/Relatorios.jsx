@@ -182,8 +182,8 @@ function gerarPDFFinanceiro({ pagamentos, receita, pendente, labelPeriodo }) {
   const doc = new jsPDF();
   let y = cabecalhoPDF(doc, "Relatório Financeiro", labelPeriodo);
 
-  const pago = pagamentos.filter((p) => ["pago", "paga"].includes(String(p.status || "").toLowerCase()));
-  const pendentes = pagamentos.filter((p) => ["pendente", "aguardando"].includes(String(p.status || "").toLowerCase()));
+  const pago = pagamentos.filter((p) => ["pago", "paga"].includes(String(p.statusPagamento || p.status || "").toLowerCase()));
+  const pendentes = pagamentos.filter((p) => ["pendente", "aguardando"].includes(String(p.statusPagamento || p.status || "").toLowerCase()));
 
   autoTable(doc, {
     startY: y,
@@ -322,7 +322,7 @@ export default function Relatorios({
   const receitaConfirmada = useMemo(
     () =>
       pagamentosFiltrados
-        .filter((p) => ["pago", "paga"].includes(String(p.status || "").toLowerCase()))
+        .filter((p) => ["pago", "paga"].includes(String(p.statusPagamento || p.status || "").toLowerCase()))
         .reduce((acc, p) => acc + Number(p.valor || 0), 0),
     [pagamentosFiltrados]
   );
@@ -330,7 +330,7 @@ export default function Relatorios({
   const receitaPendente = useMemo(
     () =>
       pagamentosFiltrados
-        .filter((p) => ["pendente", "aguardando"].includes(String(p.status || "").toLowerCase()))
+        .filter((p) => ["pendente", "aguardando"].includes(String(p.statusPagamento || p.status || "").toLowerCase()))
         .reduce((acc, p) => acc + Number(p.valor || 0), 0),
     [pagamentosFiltrados]
   );
