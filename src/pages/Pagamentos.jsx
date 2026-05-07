@@ -4,8 +4,6 @@ import {
   collection,
   doc,
   getDocs,
-  onSnapshot,
-  orderBy,
   query,
   serverTimestamp,
   updateDoc,
@@ -91,10 +89,9 @@ async function sincMovimentacao(db, docId, pagamento, valor, statusNorm, userDat
   }
 }
 
-export default function Pagamentos({ pacientes = [], consultas = [], pagamentoCheckout = null, onLimparCheckout }) {
+export default function Pagamentos({ pacientes = [], consultas = [], pagamentos = [], pagamentoCheckout = null, onLimparCheckout, onIrParaFinanceiro, onIrParaRelatorios }) {
   const { userData, firebaseUser } = useAuth();
 
-  const [pagamentos, setPagamentos] = useState([]);
   const [salvandoPagamento, setSalvandoPagamento] = useState(false);
   const [pagamentoIdParaAtualizar, setPagamentoIdParaAtualizar] = useState(null);
 
@@ -111,21 +108,6 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentoCh
     dataPagamento: new Date().toISOString().split("T")[0],
     observacoes: "",
   });
-
-  useEffect(() => {
-    const q = query(collection(db, "pagamentos"), orderBy("criadoEm", "desc"));
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setPagamentos(
-        snapshot.docs.map((documento) => ({
-          id: documento.id,
-          ...documento.data(),
-        }))
-      );
-    });
-
-    return () => unsubscribe();
-  }, []);
 
   useEffect(() => {
     if (!pagamentoCheckout) return;
@@ -443,9 +425,32 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentoCh
           </p>
         </div>
 
-        <div className="patients-hero-badges">
+        <div className="patients-hero-badges" style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
           <span className="patients-chip">Atendimentos: {atendimentosDoDia.length}</span>
           <span className="patients-chip">Recebido: {formatarMoeda(totalRecebido)}</span>
+          {pagamentosPendentes.length > 0 && (
+            <span className="patients-chip" style={{ background: "rgba(245,158,11,0.15)", color: "#92400e", border: "1px solid rgba(245,158,11,0.3)" }}>
+              {pagamentosPendentes.length} pendente{pagamentosPendentes.length !== 1 ? "s" : ""}
+            </span>
+          )}
+          {onIrParaFinanceiro && (
+            <button onClick={onIrParaFinanceiro} style={{
+              padding: "6px 14px", borderRadius: "20px", fontSize: "12px", fontWeight: 700,
+              border: "1.5px solid rgba(15,118,110,0.5)", background: "rgba(15,118,110,0.1)",
+              color: "#0f766e", cursor: "pointer",
+            }}>
+              Ver no Financeiro →
+            </button>
+          )}
+          {onIrParaRelatorios && (
+            <button onClick={onIrParaRelatorios} style={{
+              padding: "6px 14px", borderRadius: "20px", fontSize: "12px", fontWeight: 700,
+              border: "1.5px solid rgba(99,102,241,0.4)", background: "rgba(99,102,241,0.08)",
+              color: "#6366f1", cursor: "pointer",
+            }}>
+              Relatórios
+            </button>
+          )}
         </div>
       </div>
 

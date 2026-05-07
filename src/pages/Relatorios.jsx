@@ -239,6 +239,8 @@ export default function Relatorios({
   pagamentos = [],
   pacientes = [],
   users = [],
+  onIrParaFinanceiro,
+  onIrParaPagamentos,
 }) {
   const [periodo, setPeriodo] = useState("30");
   const [dataInicio, setDataInicio] = useState("");
@@ -423,9 +425,24 @@ export default function Relatorios({
           </div>
         )}
 
-        <div
-          style={{
-            marginLeft: "auto",
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          {onIrParaPagamentos && (
+            <button onClick={onIrParaPagamentos} style={{
+              padding: "5px 12px", borderRadius: "20px", fontSize: "12px", fontWeight: 600,
+              border: "1.5px solid #0f766e", background: "transparent", color: "#0f766e", cursor: "pointer",
+            }}>
+              Pagamentos
+            </button>
+          )}
+          {onIrParaFinanceiro && (
+            <button onClick={onIrParaFinanceiro} style={{
+              padding: "5px 12px", borderRadius: "20px", fontSize: "12px", fontWeight: 600,
+              border: "1.5px solid #6366f1", background: "transparent", color: "#6366f1", cursor: "pointer",
+            }}>
+              Financeiro
+            </button>
+          )}
+          <div style={{
             fontSize: "12px",
             color: "#475569",
             background: "#f8fafc",
@@ -433,9 +450,9 @@ export default function Relatorios({
             borderRadius: "20px",
             padding: "4px 12px",
             fontWeight: 500,
-          }}
-        >
-          {labelPeriodo}
+          }}>
+            {labelPeriodo}
+          </div>
         </div>
       </div>
 

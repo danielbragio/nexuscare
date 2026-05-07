@@ -338,6 +338,7 @@ export default function App() {
   const [users, setUsers] = useState([]);
   const [atendimentosOdonto, setAtendimentosOdonto] = useState([]);
   const [procedimentosOdonto, setProcedimentosOdonto] = useState([]);
+  const [estoque, setEstoque] = useState([]);
   const [dataLoading, setDataLoading] = useState(true);
 
   // ── Busca global ─────────────────────────────────────────────────────────────
@@ -481,6 +482,7 @@ export default function App() {
       setUsers([]);
       setAtendimentosOdonto([]);
       setProcedimentosOdonto([]);
+      setEstoque([]);
       setDataLoading(false);
       return;
     }
@@ -557,6 +559,12 @@ export default function App() {
       (err) => { console.error("procedimentosOdonto:", err); setProcedimentosOdonto([]); }
     );
 
+    const unsubEstoque = onSnapshot(
+      query(collection(db, "estoque"), orderBy("nome", "asc")),
+      (snap) => setEstoque(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      (err) => { console.error("estoque:", err); setEstoque([]); }
+    );
+
     return () => {
       unsubPacientes();
       unsubConsultas();
@@ -565,6 +573,7 @@ export default function App() {
       unsubUsers();
       unsubAtendimentosOdonto();
       unsubProcedimentosOdonto();
+      unsubEstoque();
     };
   }, [firebaseUser, userData?.role, userData?.permissions]);
 
@@ -818,6 +827,8 @@ export default function App() {
             pagamentos={pagamentos}
             pagamentoCheckout={pagamentoCheckout}
             onLimparCheckout={() => setPagamentoCheckout(null)}
+            onIrParaFinanceiro={() => setView("financeiro")}
+            onIrParaRelatorios={() => setView("relatorios")}
           />
         );
 
@@ -838,6 +849,7 @@ export default function App() {
           <Medicos
             consultas={consultas}
             pagamentos={pagamentos}
+            pacientes={pacientes}
             consultaSelecionadaExterna={consultaSelecionadaExterna}
             limparConsultaExterna={() => setConsultaSelecionadaExterna(null)}
             consultorioAtual={consultorioAtual}
@@ -870,6 +882,8 @@ export default function App() {
             pagamentos={pagamentos}
             consultas={consultas}
             pacientes={pacientes}
+            onIrParaRelatorios={() => setView("relatorios")}
+            onIrParaPagamentos={() => setView("pagamentos")}
           />
         );
 
@@ -889,10 +903,17 @@ export default function App() {
         return <Normas />;
 
       case "prontuario":
-        return <Prontuario consultas={consultas} atendimentosOdonto={atendimentosOdonto} />;
+        return (
+          <Prontuario
+            consultas={consultas}
+            atendimentosOdonto={atendimentosOdonto}
+            pacientes={pacientes}
+            pagamentos={pagamentos}
+          />
+        );
 
       case "estoque":
-        return <Estoque />;
+        return <Estoque estoque={estoque} />;
 
       case "relatorios":
         return (
@@ -901,6 +922,8 @@ export default function App() {
             pagamentos={pagamentos}
             pacientes={pacientes}
             users={users}
+            onIrParaFinanceiro={() => setView("financeiro")}
+            onIrParaPagamentos={() => setView("pagamentos")}
           />
         );
 
@@ -914,6 +937,11 @@ export default function App() {
             consultorios={consultorios}
             users={users}
             atendimentosOdonto={atendimentosOdonto}
+            estoque={estoque}
+            onIrParaEstoque={() => setView("estoque")}
+            onIrParaFinanceiro={() => setView("financeiro")}
+            onIrParaPagamentos={() => setView("pagamentos")}
+            onIrParaRelatorios={() => setView("relatorios")}
           />
         );
     }

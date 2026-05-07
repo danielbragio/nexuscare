@@ -4,11 +4,13 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDocs,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
   updateDoc,
+  where,
 } from "firebase/firestore";
 import {
   deleteObject,
@@ -127,13 +129,12 @@ function LineChart({ dados, metrica, cor, formatMoeda }) {
   );
 }
 
-export default function Financeiro() {
+export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrParaPagamentos }) {
   const [abaAtiva, setAbaAtiva] = useState("resumo");
-  const [pagamentos, setPagamentos] = useState([]);
   const [contasPagar, setContasPagar] = useState([]);
   const [anexosFinanceiros, setAnexosFinanceiros] = useState([]);
   const [historicoFinanceiro, setHistoricoFinanceiro] = useState([]);
-  const [carregando, setCarregando] = useState(true);
+  const [carregando, setCarregando] = useState(false);
 
   const [periodo, setPeriodo] = useState("30dias");
   const [periodoCustomInicio, setPeriodoCustomInicio] = useState("");
@@ -212,27 +213,6 @@ export default function Financeiro() {
     valorRetido: "",
     observacao: "",
   });
-
-  useEffect(() => {
-    const unsubscribe = onSnapshot(
-      collection(db, "pagamentos"),
-      (snapshot) => {
-        const lista = snapshot.docs.map((documento) => ({
-          id: documento.id,
-          ...documento.data(),
-        }));
-
-        setPagamentos(lista);
-        setCarregando(false);
-      },
-      (error) => {
-        console.error("Erro ao buscar pagamentos:", error);
-        setCarregando(false);
-      }
-    );
-
-    return () => unsubscribe();
-  }, []);
 
   useEffect(() => {
     const q = query(collection(db, "contasPagar"), orderBy("criadoEm", "desc"));
@@ -541,15 +521,50 @@ export default function Financeiro() {
     }
   }
 
+  async function sincMovFinanceiro(pagamentoId, statusNorm) {
+    const pag = pagamentos.find((p) => p.id === pagamentoId);
+    if (!pag) return;
+    try {
+      const snap = await getDocs(
+        query(
+          collection(db, "movimentacoes"),
+          where("referenciaId", "==", pagamentoId),
+          where("origem", "==", "pagamentos")
+        )
+      );
+      const dados = {
+        referenciaId: pagamentoId,
+        origem: "pagamentos",
+        tipo: "Receita",
+        categoria: "Receita",
+        descricao: pag.tipoAtendimento || pag.descricao || "",
+        valor: Number(pag.valor || 0),
+        data: pag.dataPagamento || dataAtualFormatada(),
+        nomePaciente: pag.paciente || pag.nomePaciente || "",
+        formaPagamento: pag.formaPagamento || "",
+        status: statusNorm,
+        atualizadoEm: serverTimestamp(),
+      };
+      if (!snap.empty) {
+        await updateDoc(doc(db, "movimentacoes", snap.docs[0].id), dados);
+      } else {
+        await addDoc(collection(db, "movimentacoes"), { ...dados, criadoEm: serverTimestamp() });
+      }
+    } catch (e) {
+      console.error("Erro ao sincronizar movimentação:", e);
+    }
+  }
+
   async function marcarComoPago(pagamentoId) {
     try {
       await updateDoc(doc(db, "pagamentos", pagamentoId), {
         statusPagamento: "Pago",
+        status: "pago",
         dataPagamento: dataAtualFormatada(),
         atualizadoEm: serverTimestamp(),
       });
-
-      alert("Conta marcada como paga.");
+      await sincMovFinanceiro(pagamentoId, "pago");
+      alert("Pagamento marcado como pago.");
     } catch (error) {
       console.error("Erro ao marcar como pago:", error);
       alert("Não foi possível atualizar o pagamento.");
@@ -564,9 +579,22 @@ export default function Financeiro() {
     try {
       await updateDoc(doc(db, "pagamentos", pagamentoId), {
         statusPagamento: "Cancelado",
+        status: "cancelado",
         atualizadoEm: serverTimestamp(),
       });
-
+      const snap = await getDocs(
+        query(
+          collection(db, "movimentacoes"),
+          where("referenciaId", "==", pagamentoId),
+          where("origem", "==", "pagamentos")
+        )
+      );
+      if (!snap.empty) {
+        await updateDoc(doc(db, "movimentacoes", snap.docs[0].id), {
+          status: "cancelado",
+          atualizadoEm: serverTimestamp(),
+        });
+      }
       alert("Pagamento cancelado.");
     } catch (error) {
       console.error("Erro ao cancelar pagamento:", error);
@@ -1141,6 +1169,23 @@ export default function Financeiro() {
                     <h1 style={{ margin: 0, fontSize: "26px", fontWeight: 800, letterSpacing: "-0.04em", color: "var(--text)" }}>Visão Financeira</h1>
                     <p style={{ margin: "5px 0 0", fontSize: "13px", color: "var(--text-muted)" }}>{labelPeriodo}</p>
                   </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  {onIrParaPagamentos && (
+                    <button onClick={onIrParaPagamentos} style={{
+                      padding: "7px 14px", borderRadius: "9px", fontSize: "12px", fontWeight: 600, border: "1.5px solid #0f766e",
+                      background: "transparent", color: "#0f766e", cursor: "pointer", transition: "all 0.15s",
+                    }}>
+                      Ir para Pagamentos →
+                    </button>
+                  )}
+                  {onIrParaRelatorios && (
+                    <button onClick={onIrParaRelatorios} style={{
+                      padding: "7px 14px", borderRadius: "9px", fontSize: "12px", fontWeight: 600, border: "1.5px solid #6366f1",
+                      background: "transparent", color: "#6366f1", cursor: "pointer", transition: "all 0.15s",
+                    }}>
+                      Ver Relatórios →
+                    </button>
+                  )}
                   <div style={{ display: "flex", background: "var(--bg-muted)", borderRadius: "12px", padding: "3px", gap: "2px" }}>
                     {[["hoje", "Hoje"], ["7dias", "7 dias"], ["30dias", "30 dias"], ["custom", "Personalizado"]].map(([p, label]) => (
                       <button key={p} onClick={() => setPeriodo(p)} style={{
@@ -1152,6 +1197,7 @@ export default function Financeiro() {
                       }}>{label}</button>
                     ))}
                   </div>
+                </div>
                 </div>
 
                 {periodo === "custom" && (
