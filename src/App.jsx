@@ -55,6 +55,8 @@ import Normas from "./pages/Normas";
 import Prontuario from "./pages/Prontuario";
 import Estoque from "./pages/Estoque";
 import Relatorios from "./pages/Relatorios";
+import DashboardMedico from "./pages/DashboardMedico";
+import DashboardFinanceiro from "./pages/DashboardFinanceiro";
 import ModalPerfil from "./components/ModalPerfil";
 
 function FirebaseLoginScreen() {
@@ -324,12 +326,6 @@ export default function App() {
   const [pagamentoCheckout, setPagamentoCheckout] = useState(null);
   const [mostrarPerfil, setMostrarPerfil] = useState(false);
   const [fotoURLPerfil, setFotoURLPerfil] = useState(userData?.photoURL || "");
-
-  const [menuAberto, setMenuAberto] = useState({
-    principal: true,
-    assistencial: false,
-    gestao: false,
-  });
 
   const [pacientes, setPacientes] = useState([]);
   const [consultas, setConsultas] = useState([]);
@@ -870,6 +866,8 @@ export default function App() {
             userData={userData}
             pagamentos={pagamentos}
             procedimentosOdonto={procedimentosOdonto}
+            atendimentosOdonto={atendimentosOdonto}
+            onIrParaPagamentos={() => setView("pagamentos")}
           />
         );
 
@@ -927,7 +925,28 @@ export default function App() {
           />
         );
 
-      default:
+      default: {
+        const role = userData?.role || "";
+        if (role === "medico") {
+          return (
+            <DashboardMedico
+              consultas={consultas}
+              consultorioAtual={consultorioAtual}
+              userData={userData}
+              onIrParaConsultas={() => setView("medicos")}
+            />
+          );
+        }
+        if (role === "financeiro") {
+          return (
+            <DashboardFinanceiro
+              pagamentos={pagamentos}
+              onIrParaFinanceiro={() => setView("financeiro")}
+              onIrParaPagamentos={() => setView("pagamentos")}
+              onIrParaRelatorios={() => setView("relatorios")}
+            />
+          );
+        }
         return (
           <Dashboard
             consultas={consultas}
@@ -944,6 +963,7 @@ export default function App() {
             onIrParaRelatorios={() => setView("relatorios")}
           />
         );
+      }
     }
   }
 
@@ -964,6 +984,63 @@ export default function App() {
     administracao: Settings,
   };
 
+  const VIEW_TITLES = {
+    dashboard: "Dashboard",
+    pacientes: "Recepção",
+    pagamentos: "Pagamentos",
+    agendamentos: "Agendamentos",
+    medicos: "Consultas",
+    enfermagem: "Enfermagem",
+    odonto: "Odontologia",
+    financeiro: "Financeiro",
+    faturamento: "Faturamento",
+    relatorios: "Relatórios",
+    estoque: "Estoque",
+    prontuario: "Prontuário",
+    normas: "Normas",
+    administracao: "Administração",
+  };
+
+  const VIEW_SECTIONS = {
+    pacientes: "Atendimento",
+    agendamentos: "Atendimento",
+    pagamentos: "Atendimento",
+    medicos: "Clínico",
+    enfermagem: "Clínico",
+    prontuario: "Clínico",
+    odonto: "Clínico",
+    financeiro: "Financeiro",
+    faturamento: "Financeiro",
+    relatorios: "Financeiro",
+    estoque: "Financeiro",
+    administracao: "Sistema",
+    normas: "Sistema",
+  };
+
+  const ROLE_LABELS = {
+    admin: "Administrador",
+    recepcao: "Recepção",
+    medico: "Médico",
+    enfermagem: "Enfermagem",
+    odonto: "Odontologia",
+    financeiro: "Financeiro",
+    estoque: "Estoque",
+  };
+
+  const ROLE_COLORS = {
+    admin: "#7c3aed",
+    recepcao: "#2563eb",
+    medico: "#0f766e",
+    enfermagem: "#db2777",
+    odonto: "#0d9488",
+    financeiro: "#16a34a",
+    estoque: "#ea580c",
+  };
+
+  function hasAnyInGroup(keys) {
+    return keys.some((k) => hasPermission(userData, k));
+  }
+
   function menu(label, value) {
     if (!hasPermission(userData, value)) return null;
     const Icon = MENU_ICONS[value];
@@ -980,13 +1057,6 @@ export default function App() {
         <span className="sidebar-btn-label">{label}</span>
       </button>
     );
-  }
-
-  function toggleGrupo(grupo) {
-    setMenuAberto((prev) => ({
-      ...prev,
-      [grupo]: !prev[grupo],
-    }));
   }
 
   async function sairSistema() {
@@ -1046,55 +1116,52 @@ export default function App() {
         </div>
 
         <div className="sidebar-nav">
-          <button
-            className={`menu-section-toggle ${menuAberto.principal ? "open" : ""}`}
-            onClick={() => toggleGrupo("principal")}
-          >
-            Principal <span>{menuAberto.principal ? "▾" : "▸"}</span>
-          </button>
+          {menu("Dashboard", "dashboard")}
 
-          {menuAberto.principal && (
-            <div className="menu-group">
-              {menu("Dashboard", "dashboard")}
-              {menu("Recepção", "pacientes")}
-              {menu("Pagamentos", "pagamentos")}
-              {menu("Agendamentos", "agendamentos")}
-              {menu("Prontuário", "prontuario")}
+          {hasAnyInGroup(["pacientes", "agendamentos", "pagamentos"]) && (
+            <div className="menu-section-toggle" style={{ cursor: "default", pointerEvents: "none" }}>
+              Atendimento
             </div>
           )}
+          <div className="menu-group">
+            {menu("Recepção", "pacientes")}
+            {menu("Agendamentos", "agendamentos")}
+            {menu("Pagamentos", "pagamentos")}
+          </div>
 
-          <button
-            className={`menu-section-toggle ${menuAberto.assistencial ? "open" : ""}`}
-            onClick={() => toggleGrupo("assistencial")}
-          >
-            Assistencial <span>{menuAberto.assistencial ? "▾" : "▸"}</span>
-          </button>
-
-          {menuAberto.assistencial && (
-            <div className="menu-group">
-              {menu("Consulta", "medicos")}
-              {menu("Enfermagem", "enfermagem")}
-              {menu("Odonto", "odonto")}
+          {hasAnyInGroup(["medicos", "prontuario", "enfermagem", "odonto"]) && (
+            <div className="menu-section-toggle" style={{ cursor: "default", pointerEvents: "none" }}>
+              Clínico
             </div>
           )}
+          <div className="menu-group">
+            {menu("Consultas", "medicos")}
+            {menu("Prontuário", "prontuario")}
+            {menu("Enfermagem", "enfermagem")}
+            {menu("Odontologia", "odonto")}
+          </div>
 
-          <button
-            className={`menu-section-toggle ${menuAberto.gestao ? "open" : ""}`}
-            onClick={() => toggleGrupo("gestao")}
-          >
-            Gestão <span>{menuAberto.gestao ? "▾" : "▸"}</span>
-          </button>
-
-          {menuAberto.gestao && (
-            <div className="menu-group">
-              {menu("Faturamento", "faturamento")}
-              {menu("Financeiro", "financeiro")}
-              {menu("Estoque", "estoque")}
-              {menu("Relatórios", "relatorios")}
-              {menu("Normas", "normas")}
-              {menu("Administração", "administracao")}
+          {hasAnyInGroup(["financeiro", "faturamento", "relatorios", "estoque"]) && (
+            <div className="menu-section-toggle" style={{ cursor: "default", pointerEvents: "none" }}>
+              Financeiro
             </div>
           )}
+          <div className="menu-group">
+            {menu("Financeiro", "financeiro")}
+            {menu("Faturamento", "faturamento")}
+            {menu("Relatórios", "relatorios")}
+            {menu("Estoque", "estoque")}
+          </div>
+
+          {hasAnyInGroup(["administracao", "normas"]) && (
+            <div className="menu-section-toggle" style={{ cursor: "default", pointerEvents: "none" }}>
+              Sistema
+            </div>
+          )}
+          <div className="menu-group">
+            {menu("Administração", "administracao")}
+            {menu("Normas", "normas")}
+          </div>
         </div>
 
         <div
@@ -1129,35 +1196,12 @@ export default function App() {
         <div className="topbar">
           <div className="topbar-left">
             <div className="topbar-title">
-              {view === "pacientes"
-                ? "Recepção"
-                : view === "pagamentos"
-                ? "Pagamentos"
-                : view === "odonto"
-                ? "Odontologia"
-                : view === "relatorios"
-                ? "Relatórios"
-                : view === "administracao"
-                ? "Administração"
-                : view === "prontuario"
-                ? "Prontuário"
-                : view === "financeiro"
-                ? "Financeiro"
-                : view === "agendamentos"
-                ? "Agendamentos"
-                : view === "medicos"
-                ? "Consulta"
-                : view === "faturamento"
-                ? "Faturamento"
-                : view === "normas"
-                ? "Normas"
-                : view === "estoque"
-                ? "Estoque"
-                : view === "enfermagem"
-                ? "Enfermagem"
-                : view === "dashboard"
-                ? "Dashboard"
-                : view.charAt(0).toUpperCase() + view.slice(1)}
+              {VIEW_SECTIONS[view] && (
+                <span style={{ fontSize: "12px", fontWeight: 500, color: "#94a3b8", marginRight: "6px" }}>
+                  {VIEW_SECTIONS[view]} /
+                </span>
+              )}
+              {VIEW_TITLES[view] || (view ? view.charAt(0).toUpperCase() + view.slice(1) : "Dashboard")}
             </div>
             <div className="topbar-subtitle">
               {consultorioAtual
@@ -1254,6 +1298,21 @@ export default function App() {
               )}
             </div>
 
+            {userData?.role && (
+              <div style={{
+                background: (ROLE_COLORS[userData.role] || "#64748b") + "18",
+                color: ROLE_COLORS[userData.role] || "#64748b",
+                border: `1px solid ${(ROLE_COLORS[userData.role] || "#64748b")}33`,
+                borderRadius: "999px",
+                padding: "4px 12px",
+                fontSize: "11px",
+                fontWeight: 700,
+                letterSpacing: "0.04em",
+                flexShrink: 0,
+              }}>
+                {ROLE_LABELS[userData.role] || userData.role}
+              </div>
+            )}
             <button className="secondary-btn" onClick={sairSistema}>
               Sair
             </button>

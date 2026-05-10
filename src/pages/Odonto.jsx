@@ -5,6 +5,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDocs,
   onSnapshot,
   orderBy,
   query,
@@ -59,6 +60,22 @@ function formatarValor(valor) {
 
 function getDataHoje() {
   return new Date().toISOString().split("T")[0];
+}
+
+function dataAtendimento(at) {
+  if (at.data) return at.data;
+  const s = at.createdAt?.seconds;
+  if (s) return new Date(s * 1000).toISOString().slice(0, 10);
+  const d = at.createdAt?.toDate?.();
+  return d ? d.toISOString().slice(0, 10) : "";
+}
+
+function tempoEspera(at) {
+  const s = at.createdAt?.seconds;
+  if (!s) return null;
+  const mins = Math.floor((Date.now() / 1000 - s) / 60);
+  if (mins < 60) return `${mins}min`;
+  return `${Math.floor(mins / 60)}h${mins % 60 > 0 ? String(mins % 60).padStart(2, "0") + "m" : ""}`;
 }
 
 const FORM_ANAMNESE_INICIAL = {
@@ -117,6 +134,7 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
     (Array.isArray(userData?.permissions) && userData.permissions.includes("administracao"));
   const [abaAtual, setAbaAtual] = useState("agendamentos");
   const [buscaFila, setBuscaFila] = useState("");
+  const [filtroFila, setFiltroFila] = useState("hoje");
   const [buscaAgendamentos, setBuscaAgendamentos] = useState("");
   const [agendamentos, setAgendamentos] = useState([]);
   const [atendimentos, setAtendimentos] = useState([]);
@@ -249,23 +267,36 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
 
   const filaAguardando = useMemo(
     () =>
-      [...atendimentosFiltrados.filter((a) => a.status === "aguardando")].sort(
-        (a, b) => (a.hora || "").localeCompare(b.hora || "")
-      ),
-    [atendimentosFiltrados]
+      [...atendimentosFiltrados.filter((a) => {
+        if (a.status !== "aguardando") return false;
+        if (filtroFila === "hoje") return dataAtendimento(a) === hoje;
+        return true;
+      })].sort((a, b) => (a.hora || "").localeCompare(b.hora || "")),
+    [atendimentosFiltrados, filtroFila, hoje]
   );
 
   const filaEmAtendimento = useMemo(
-    () => atendimentosFiltrados.filter((a) => a.status === "em_atendimento"),
-    [atendimentosFiltrados]
+    () => atendimentosFiltrados.filter((a) => {
+      if (a.status !== "em_atendimento") return false;
+      if (filtroFila === "hoje") return dataAtendimento(a) === hoje;
+      return true;
+    }),
+    [atendimentosFiltrados, filtroFila, hoje]
   );
 
   const filaFinalizados = useMemo(
     () =>
-      [...atendimentosFiltrados.filter((a) => a.status === "finalizado")].sort(
-        (a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)
-      ),
-    [atendimentosFiltrados]
+      [...atendimentosFiltrados.filter((a) => {
+        if (a.status !== "finalizado") return false;
+        if (filtroFila === "hoje") return dataAtendimento(a) === hoje;
+        return true;
+      })].sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)),
+    [atendimentosFiltrados, filtroFila, hoje]
+  );
+
+  const agendamentosNaoEncaminhados = useMemo(
+    () => agendamentosHoje.filter((ag) => ag.status === "agendado"),
+    [agendamentosHoje]
   );
 
   const subtotalAtendimento = procedimentosSelecionados.reduce(
@@ -399,6 +430,38 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
     }
   }
 
+  async function sincMovOdonto(pagamentoId, valorFinal) {
+    try {
+      const snap = await getDocs(
+        query(
+          collection(db, "movimentacoes"),
+          where("referenciaId", "==", pagamentoId),
+          where("origem", "==", "pagamentos")
+        )
+      );
+      const dados = {
+        referenciaId: pagamentoId,
+        origem: "pagamentos",
+        tipo: "Receita",
+        categoria: "Odontologia",
+        descricao: atendimentoAberto?.tipoAtendimento || "Atendimento odontológico",
+        valor: valorFinal,
+        data: getDataHoje(),
+        nomePaciente: atendimentoAberto?.pacienteNome || "",
+        formaPagamento: formaPagamentoOdonto,
+        status: statusPagamentoOdonto,
+        atualizadoEm: serverTimestamp(),
+      };
+      if (!snap.empty) {
+        await updateDoc(doc(db, "movimentacoes", snap.docs[0].id), dados);
+      } else {
+        await addDoc(collection(db, "movimentacoes"), { ...dados, criadoEm: serverTimestamp() });
+      }
+    } catch (e) {
+      console.error("Erro ao sincronizar movimentação odonto:", e);
+    }
+  }
+
   async function finalizarAtendimento() {
     if (!atendimentoAberto) return;
     const totalProcRealizados = procedimentosSelecionados.reduce(
@@ -452,9 +515,9 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
         });
       }
 
-      if (atendimentoAberto.pagamentoId) {
-        // Atualizar pagamento existente criado pela recepção
-        await updateDoc(doc(db, "pagamentos", atendimentoAberto.pagamentoId), {
+      let pagId = atendimentoAberto.pagamentoId || null;
+      if (pagId) {
+        await updateDoc(doc(db, "pagamentos", pagId), {
           valor: valorFinal,
           status: statusPagamentoOdonto,
           statusPagamento: statusPagamentoOdonto === "pago" ? "Pago" : statusPagamentoOdonto === "cortesia" ? "Cortesia" : "Pendente",
@@ -465,8 +528,7 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
           updatedAt: serverTimestamp(),
         });
       } else {
-        // Criar novo registro de pagamento (atendimento sem pagamento prévio)
-        await addDoc(collection(db, "pagamentos"), {
+        const pagRef = await addDoc(collection(db, "pagamentos"), {
           pacienteId: atendimentoAberto.pacienteId || "",
           paciente: atendimentoAberto.pacienteNome,
           nomePaciente: atendimentoAberto.pacienteNome,
@@ -484,7 +546,10 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
           dataPagamento: dataHoje,
           createdAt: serverTimestamp(),
         });
+        pagId = pagRef.id;
       }
+
+      await sincMovOdonto(pagId, valorFinal);
 
       setAtendimentoAberto(null);
       setFormaPagamentoOdonto("dinheiro");
@@ -1327,222 +1392,289 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
       {/* ── ABA FILA ── */}
       {abaAtual === "fila" && (
         <div>
-          {/* Busca da fila */}
-          <div className="page-card" style={{ marginBottom: "16px", padding: "12px 16px" }}>
+          {/* Barra de controles */}
+          <div style={{
+            display: "flex", alignItems: "center", gap: "10px", marginBottom: "14px", flexWrap: "wrap",
+          }}>
+            {/* Toggle Hoje / Tudo */}
+            <div style={{ display: "flex", background: "#f1f5f9", borderRadius: "8px", padding: "3px", gap: "2px", flexShrink: 0 }}>
+              {[{ v: "hoje", label: "Hoje" }, { v: "tudo", label: "Todos" }].map((opt) => (
+                <button
+                  key={opt.v}
+                  onClick={() => setFiltroFila(opt.v)}
+                  style={{
+                    background: filtroFila === opt.v ? "#fff" : "none",
+                    border: filtroFila === opt.v ? "1px solid #e2e8f0" : "1px solid transparent",
+                    borderRadius: "6px", padding: "5px 14px", fontSize: "12px",
+                    fontWeight: filtroFila === opt.v ? 700 : 500,
+                    color: filtroFila === opt.v ? "#0f766e" : "#64748b",
+                    cursor: "pointer", boxShadow: filtroFila === opt.v ? "0 1px 3px rgba(0,0,0,0.07)" : "none",
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            {/* Busca */}
             <input
               className="input"
-              style={{ margin: 0 }}
-              placeholder="Buscar paciente na fila..."
+              style={{ margin: 0, flex: 1, minWidth: "160px", maxWidth: "320px" }}
+              placeholder="Buscar paciente..."
               value={buscaFila}
               onChange={(e) => setBuscaFila(e.target.value)}
             />
+            {/* Contador rápido */}
+            <div style={{ display: "flex", gap: "8px", marginLeft: "auto", flexShrink: 0 }}>
+              {[
+                { label: "Aguardando", count: filaAguardando.length, color: "#d97706", bg: "#fffbeb" },
+                { label: "Atendendo",  count: filaEmAtendimento.length, color: "#0f766e", bg: "#f0fdf9" },
+                { label: "Prontos",    count: filaFinalizados.length, color: "#16a34a", bg: "#f0fdf4" },
+              ].map((s) => (
+                <span key={s.label} style={{ fontSize: "11px", fontWeight: 700, background: s.bg, color: s.color, borderRadius: "999px", padding: "3px 10px", border: `1px solid ${s.color}22` }}>
+                  {s.count} {s.label}
+                </span>
+              ))}
+            </div>
           </div>
 
-          <div className="odonto-fila-grid">
-            {/* Aguardando */}
-            <div className="page-card">
-              <h3 className="odonto-fila-titulo odonto-fila-aguardando">
-                ⏳ Aguardando ({filaAguardando.filter((a) => !buscaFila || (a.pacienteNome || "").toLowerCase().includes(buscaFila.toLowerCase())).length})
-              </h3>
-              <div className="odonto-fila-lista">
-                {filaAguardando
-                  .filter((a) => !buscaFila || (a.pacienteNome || "").toLowerCase().includes(buscaFila.toLowerCase()))
-                  .map((at) => (
-                    <div
-                      key={at.id}
-                      className="odonto-card-paciente"
-                      style={{ borderLeftColor: "#f59e0b" }}
-                    >
-                      <div style={{ flex: 1 }}>
-                        {/* Hora + Nome */}
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "5px", flexWrap: "wrap" }}>
-                          {at.hora && (
-                            <span style={{
-                              fontSize: "13px", fontWeight: 700, color: "#92400e",
-                              background: "#fef3c7", border: "1px solid #fde68a",
-                              borderRadius: "6px", padding: "1px 8px", flexShrink: 0,
-                            }}>
-                              {at.hora}
-                            </span>
-                          )}
-                          <strong style={{ fontSize: "15px" }}>{at.pacienteNome}</strong>
-                        </div>
-
-                        {/* Tipo e data */}
-                        <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-                          <span className="odonto-card-tipo" style={{ margin: 0 }}>{at.tipoAtendimento}</span>
-                          {at.data && at.data !== hoje && (
-                            <span style={{ fontSize: "11px", color: "#94a3b8" }}>📅 {at.data}</span>
-                          )}
-                        </div>
-
-                        {/* Procedimentos solicitados */}
-                        {(at.procedimentosSolicitados || []).length > 0 && (
-                          <div style={{ fontSize: "11px", color: "#0f766e", marginTop: "5px", lineHeight: 1.4 }}>
-                            🦷 {(at.procedimentosSolicitados || []).map((p) => p.nome).join(", ")}
-                          </div>
-                        )}
-
-                        {/* Observações da recepção */}
-                        {at.observacoesRecepcao && (
-                          <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px", fontStyle: "italic", lineHeight: 1.4 }}>
-                            📝 {at.observacoesRecepcao.length > 90
-                              ? at.observacoesRecepcao.slice(0, 90) + "…"
-                              : at.observacoesRecepcao}
-                          </div>
-                        )}
-
-                        {/* Status pagamento */}
-                        <div style={{ marginTop: "5px", display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
-                          {at.pagamentoId ? (
-                            <span style={{
-                              fontSize: "11px",
-                              background: at.statusPagamento === "pago" ? "#f0fdf4" : at.statusPagamento === "cortesia" ? "#f5f3ff" : "#fffbeb",
-                              color: at.statusPagamento === "pago" ? "#16a34a" : at.statusPagamento === "cortesia" ? "#7c3aed" : "#d97706",
-                              border: `1px solid ${at.statusPagamento === "pago" ? "#86efac" : at.statusPagamento === "cortesia" ? "#c4b5fd" : "#fde68a"}`,
-                              borderRadius: "6px", padding: "1px 7px", display: "inline-block",
-                            }}>
-                              {at.statusPagamento === "pago" ? "✓ Pago" : at.statusPagamento === "cortesia" ? "🎁 Cortesia" : "⏳ Pagamento pendente"}
-                            </span>
-                          ) : (
-                            <span style={{ fontSize: "11px", color: "#94a3b8" }}>Sem pagamento vinculado</span>
-                          )}
-
-                          {/* Profissional (admin/recepção) */}
-                          {(isAdmin || userData?.role === "recepcao") && at.profissionalNome && (
-                            <span style={{ fontSize: "11px", color: "#7c3aed" }}>
-                              👨‍⚕️ {at.profissionalNome}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
+          {/* Alerta: agendamentos de hoje ainda não encaminhados */}
+          {filtroFila === "hoje" && agendamentosNaoEncaminhados.length > 0 && (
+            <div style={{
+              background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "10px",
+              padding: "12px 16px", marginBottom: "14px",
+              display: "flex", alignItems: "flex-start", gap: "10px",
+            }}>
+              <span style={{ fontSize: "16px", flexShrink: 0, marginTop: "1px" }}>⚠️</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: "12px", fontWeight: 700, color: "#92400e", marginBottom: "6px" }}>
+                  {agendamentosNaoEncaminhados.length} agendamento{agendamentosNaoEncaminhados.length > 1 ? "s" : ""} de hoje ainda não encaminhado{agendamentosNaoEncaminhados.length > 1 ? "s" : ""} para a fila
+                </div>
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                  {agendamentosNaoEncaminhados.map((ag) => (
+                    <div key={ag.id} style={{ display: "flex", alignItems: "center", gap: "6px", background: "#fff", border: "1px solid #fde68a", borderRadius: "8px", padding: "4px 10px" }}>
+                      <span style={{ fontSize: "12px", fontWeight: 600, color: "#78350f" }}>
+                        {ag.hora && <span style={{ color: "#92400e", marginRight: "4px" }}>{ag.hora}</span>}
+                        {ag.pacienteNome}
+                      </span>
                       <button
-                        className="primary-btn odonto-primary"
-                        style={{ padding: "8px 14px", fontSize: "12px", flexShrink: 0, alignSelf: "flex-start" }}
-                        onClick={() => abrirAtendimento(at)}
+                        onClick={() => encaminharParaFila(ag)}
+                        style={{ background: "#f59e0b", border: "none", color: "#fff", borderRadius: "6px", padding: "2px 8px", fontSize: "11px", fontWeight: 700, cursor: "pointer" }}
                       >
-                        Atender
+                        Encaminhar
                       </button>
                     </div>
                   ))}
+                </div>
+              </div>
+              <button
+                onClick={() => setAbaAtual("agendamentos")}
+                style={{ background: "none", border: "none", color: "#92400e", fontSize: "11px", fontWeight: 600, cursor: "pointer", flexShrink: 0, textDecoration: "underline" }}
+              >
+                Ver todos
+              </button>
+            </div>
+          )}
+
+          {/* Kanban 3 colunas */}
+          <div className="odonto-fila-grid">
+            {/* ── Aguardando ── */}
+            <div style={{ background: "#fff", borderRadius: "14px", border: "1px solid #e2e8f0", overflow: "hidden", boxShadow: "0 1px 4px rgba(15,23,42,0.05)" }}>
+              <div style={{ padding: "12px 16px", borderBottom: "2px solid #fef3c7", background: "#fffbeb", display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: "#f59e0b", flexShrink: 0 }} />
+                <span style={{ fontSize: "12px", fontWeight: 700, color: "#92400e", flex: 1 }}>Aguardando</span>
+                <span style={{ background: "#fde68a", color: "#92400e", fontSize: "11px", fontWeight: 700, borderRadius: "999px", padding: "1px 8px" }}>
+                  {filaAguardando.filter((a) => !buscaFila || (a.pacienteNome || "").toLowerCase().includes(buscaFila.toLowerCase())).length}
+                </span>
+              </div>
+              <div style={{ padding: "8px", display: "flex", flexDirection: "column", gap: "8px", minHeight: "120px" }}>
+                {filaAguardando
+                  .filter((a) => !buscaFila || (a.pacienteNome || "").toLowerCase().includes(buscaFila.toLowerCase()))
+                  .map((at) => {
+                    const espera = tempoEspera(at);
+                    return (
+                      <div key={at.id} style={{
+                        background: "#f8fafc", border: "1px solid #e2e8f0", borderLeft: "3px solid #f59e0b",
+                        borderRadius: "10px", padding: "10px 12px",
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "6px", marginBottom: "4px" }}>
+                          <span style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {at.pacienteNome}
+                          </span>
+                          {at.hora && (
+                            <span style={{ fontSize: "11px", fontWeight: 700, color: "#92400e", background: "#fef3c7", border: "1px solid #fde68a", borderRadius: "5px", padding: "1px 6px", flexShrink: 0 }}>
+                              {at.hora}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "6px" }}>
+                          {at.tipoAtendimento}
+                          {(isAdmin || userData?.role === "recepcao") && at.profissionalNome && (
+                            <span style={{ color: "#7c3aed", marginLeft: "6px" }}>· {at.profissionalNome}</span>
+                          )}
+                        </div>
+                        {(at.procedimentosSolicitados || []).length > 0 && (
+                          <div style={{ fontSize: "10px", color: "#0f766e", marginBottom: "5px", lineHeight: 1.4 }}>
+                            {(at.procedimentosSolicitados || []).map((p) => p.nome).join(" · ")}
+                          </div>
+                        )}
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px", marginTop: "4px" }}>
+                          <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
+                            {espera && (
+                              <span style={{ fontSize: "10px", background: "#f1f5f9", color: "#64748b", borderRadius: "5px", padding: "1px 6px" }}>
+                                ⏱ {espera}
+                              </span>
+                            )}
+                            {at.pagamentoId && (
+                              <span style={{
+                                fontSize: "10px", borderRadius: "5px", padding: "1px 6px",
+                                background: at.statusPagamento === "pago" ? "#f0fdf4" : "#fffbeb",
+                                color: at.statusPagamento === "pago" ? "#16a34a" : "#d97706",
+                                border: `1px solid ${at.statusPagamento === "pago" ? "#86efac" : "#fde68a"}`,
+                              }}>
+                                {at.statusPagamento === "pago" ? "✓ Pago" : "⏳ Pendente"}
+                              </span>
+                            )}
+                          </div>
+                          <button
+                            className="primary-btn odonto-primary"
+                            style={{ padding: "5px 12px", fontSize: "11px", flexShrink: 0 }}
+                            onClick={() => abrirAtendimento(at)}
+                          >
+                            Atender
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 {filaAguardando.filter((a) => !buscaFila || (a.pacienteNome || "").toLowerCase().includes(buscaFila.toLowerCase())).length === 0 && (
-                  <div className="odonto-fila-vazia">
-                    {buscaFila ? "Nenhum paciente encontrado." : "Nenhum paciente aguardando."}
+                  <div style={{ textAlign: "center", padding: "24px 8px", color: "#94a3b8", fontSize: "12px" }}>
+                    {buscaFila ? "Nenhum resultado." : filtroFila === "hoje" ? "Fila vazia hoje." : "Nenhum aguardando."}
                   </div>
                 )}
               </div>
             </div>
 
-            {/* Em atendimento */}
-            <div className="page-card">
-              <h3 className="odonto-fila-titulo odonto-fila-em-atendimento">
-                🦷 Em Atendimento ({filaEmAtendimento.filter((a) => !buscaFila || (a.pacienteNome || "").toLowerCase().includes(buscaFila.toLowerCase())).length})
-              </h3>
-              <div className="odonto-fila-lista">
+            {/* ── Em Atendimento ── */}
+            <div style={{ background: "#fff", borderRadius: "14px", border: "1px solid #e2e8f0", overflow: "hidden", boxShadow: "0 1px 4px rgba(15,23,42,0.05)" }}>
+              <div style={{ padding: "12px 16px", borderBottom: "2px solid #99f6e4", background: "#f0fdf9", display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: "#0f766e", flexShrink: 0 }} />
+                <span style={{ fontSize: "12px", fontWeight: 700, color: "#134e4a", flex: 1 }}>Em Atendimento</span>
+                <span style={{ background: "#99f6e4", color: "#134e4a", fontSize: "11px", fontWeight: 700, borderRadius: "999px", padding: "1px 8px" }}>
+                  {filaEmAtendimento.filter((a) => !buscaFila || (a.pacienteNome || "").toLowerCase().includes(buscaFila.toLowerCase())).length}
+                </span>
+              </div>
+              <div style={{ padding: "8px", display: "flex", flexDirection: "column", gap: "8px", minHeight: "120px" }}>
                 {filaEmAtendimento
                   .filter((a) => !buscaFila || (a.pacienteNome || "").toLowerCase().includes(buscaFila.toLowerCase()))
-                  .map((at) => (
-                    <div
-                      key={at.id}
-                      className="odonto-card-paciente"
-                      style={{ borderLeftColor: "#0f766e" }}
-                    >
-                      <div style={{ flex: 1 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "5px", flexWrap: "wrap" }}>
+                  .map((at) => {
+                    const espera = tempoEspera(at);
+                    return (
+                      <div key={at.id} style={{
+                        background: "#f0fdf9", border: "1px solid #a7f3d0", borderLeft: "3px solid #0f766e",
+                        borderRadius: "10px", padding: "10px 12px",
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "6px", marginBottom: "4px" }}>
+                          <span style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {at.pacienteNome}
+                          </span>
                           {at.hora && (
-                            <span style={{
-                              fontSize: "13px", fontWeight: 700, color: "#065f46",
-                              background: "#d1fae5", border: "1px solid #6ee7b7",
-                              borderRadius: "6px", padding: "1px 8px", flexShrink: 0,
-                            }}>
+                            <span style={{ fontSize: "11px", fontWeight: 700, color: "#065f46", background: "#d1fae5", border: "1px solid #6ee7b7", borderRadius: "5px", padding: "1px 6px", flexShrink: 0 }}>
                               {at.hora}
                             </span>
                           )}
-                          <strong style={{ fontSize: "15px" }}>{at.pacienteNome}</strong>
                         </div>
-                        <span className="odonto-card-tipo" style={{ margin: 0 }}>{at.tipoAtendimento}</span>
+                        <div style={{ fontSize: "11px", color: "#047857", marginBottom: "6px" }}>
+                          {at.tipoAtendimento}
+                          {(isAdmin || userData?.role === "recepcao") && at.profissionalNome && (
+                            <span style={{ color: "#7c3aed", marginLeft: "6px" }}>· {at.profissionalNome}</span>
+                          )}
+                        </div>
                         {(at.procedimentosSolicitados || []).length > 0 && (
-                          <div style={{ fontSize: "11px", color: "#0f766e", marginTop: "4px" }}>
-                            🦷 {(at.procedimentosSolicitados || []).map((p) => p.nome).join(", ")}
+                          <div style={{ fontSize: "10px", color: "#0f766e", marginBottom: "5px", lineHeight: 1.4 }}>
+                            {(at.procedimentosSolicitados || []).map((p) => p.nome).join(" · ")}
                           </div>
                         )}
-                        {(isAdmin || userData?.role === "recepcao") && at.profissionalNome && (
-                          <div style={{ fontSize: "11px", color: "#7c3aed", marginTop: "3px" }}>
-                            👨‍⚕️ {at.profissionalNome}
-                          </div>
-                        )}
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px", marginTop: "4px" }}>
+                          {espera && (
+                            <span style={{ fontSize: "10px", background: "#d1fae5", color: "#065f46", borderRadius: "5px", padding: "1px 6px" }}>
+                              ⏱ {espera}
+                            </span>
+                          )}
+                          <button
+                            className="primary-btn odonto-primary"
+                            style={{ padding: "5px 12px", fontSize: "11px", flexShrink: 0, marginLeft: "auto" }}
+                            onClick={() => abrirAtendimento(at)}
+                          >
+                            Continuar
+                          </button>
+                        </div>
                       </div>
-                      <button
-                        className="primary-btn odonto-primary"
-                        style={{ padding: "8px 14px", fontSize: "12px", flexShrink: 0, alignSelf: "flex-start" }}
-                        onClick={() => abrirAtendimento(at)}
-                      >
-                        Continuar
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 {filaEmAtendimento.filter((a) => !buscaFila || (a.pacienteNome || "").toLowerCase().includes(buscaFila.toLowerCase())).length === 0 && (
-                  <div className="odonto-fila-vazia">Nenhum paciente em atendimento.</div>
+                  <div style={{ textAlign: "center", padding: "24px 8px", color: "#94a3b8", fontSize: "12px" }}>
+                    Nenhum em atendimento agora.
+                  </div>
                 )}
               </div>
             </div>
 
-            {/* Finalizados */}
-            <div className="page-card">
-              <h3 className="odonto-fila-titulo odonto-fila-finalizado">
-                ✅ Finalizados ({filaFinalizados.filter((a) => !buscaFila || (a.pacienteNome || "").toLowerCase().includes(buscaFila.toLowerCase())).length})
-              </h3>
-              <div className="odonto-fila-lista">
+            {/* ── Finalizados ── */}
+            <div style={{ background: "#fff", borderRadius: "14px", border: "1px solid #e2e8f0", overflow: "hidden", boxShadow: "0 1px 4px rgba(15,23,42,0.05)" }}>
+              <div style={{ padding: "12px 16px", borderBottom: "2px solid #bbf7d0", background: "#f0fdf4", display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: "#16a34a", flexShrink: 0 }} />
+                <span style={{ fontSize: "12px", fontWeight: 700, color: "#14532d", flex: 1 }}>Finalizados</span>
+                <span style={{ background: "#bbf7d0", color: "#14532d", fontSize: "11px", fontWeight: 700, borderRadius: "999px", padding: "1px 8px" }}>
+                  {filaFinalizados.filter((a) => !buscaFila || (a.pacienteNome || "").toLowerCase().includes(buscaFila.toLowerCase())).length}
+                </span>
+              </div>
+              <div style={{ padding: "8px", display: "flex", flexDirection: "column", gap: "8px", minHeight: "120px" }}>
                 {filaFinalizados
                   .filter((a) => !buscaFila || (a.pacienteNome || "").toLowerCase().includes(buscaFila.toLowerCase()))
                   .map((at) => (
-                    <div
-                      key={at.id}
-                      className="odonto-card-paciente"
-                      style={{ borderLeftColor: "#16a34a", opacity: 0.88 }}
-                    >
-                      <div style={{ flex: 1 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "5px", flexWrap: "wrap" }}>
-                          {at.hora && (
-                            <span style={{
-                              fontSize: "12px", fontWeight: 700, color: "#166534",
-                              background: "#dcfce7", border: "1px solid #86efac",
-                              borderRadius: "6px", padding: "1px 7px", flexShrink: 0,
-                            }}>
-                              {at.hora}
-                            </span>
-                          )}
-                          <strong style={{ fontSize: "14px" }}>{at.pacienteNome}</strong>
-                        </div>
-                        <span className="odonto-card-tipo" style={{ margin: 0 }}>{at.tipoAtendimento}</span>
-                        {(at.procedimentosRealizados || []).length > 0 && (
-                          <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
-                            {(at.procedimentosRealizados || []).map((p) => p.nome).join(", ")}
-                          </div>
-                        )}
-                        {at.valorFinal > 0 && (
-                          <div style={{ fontSize: "13px", color: "#16a34a", fontWeight: 700, marginTop: "3px" }}>
-                            {formatarValor(at.valorFinal)}
-                          </div>
-                        )}
-                        {(isAdmin || userData?.role === "recepcao") && at.profissionalNome && (
-                          <div style={{ fontSize: "11px", color: "#7c3aed", marginTop: "2px" }}>
-                            👨‍⚕️ {at.profissionalNome}
-                          </div>
+                    <div key={at.id} style={{
+                      background: "#f8fafc", border: "1px solid #e2e8f0", borderLeft: "3px solid #16a34a",
+                      borderRadius: "10px", padding: "10px 12px", opacity: 0.9,
+                    }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "6px", marginBottom: "4px" }}>
+                        <span style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {at.pacienteNome}
+                        </span>
+                        {at.hora && (
+                          <span style={{ fontSize: "11px", fontWeight: 700, color: "#166534", background: "#dcfce7", border: "1px solid #86efac", borderRadius: "5px", padding: "1px 6px", flexShrink: 0 }}>
+                            {at.hora}
+                          </span>
                         )}
                       </div>
-                      <button
-                        className="secondary-btn"
-                        style={{ padding: "7px 12px", fontSize: "12px", flexShrink: 0, alignSelf: "flex-start" }}
-                        onClick={() => abrirAtendimento(at)}
-                      >
-                        Ver
-                      </button>
+                      <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "5px" }}>
+                        {at.tipoAtendimento}
+                        {(isAdmin || userData?.role === "recepcao") && at.profissionalNome && (
+                          <span style={{ color: "#7c3aed", marginLeft: "6px" }}>· {at.profissionalNome}</span>
+                        )}
+                      </div>
+                      {(at.procedimentosRealizados || []).length > 0 && (
+                        <div style={{ fontSize: "10px", color: "#64748b", marginBottom: "5px", lineHeight: 1.4 }}>
+                          {(at.procedimentosRealizados || []).map((p) => p.nome).join(" · ")}
+                        </div>
+                      )}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px" }}>
+                        {at.valorFinal > 0 && (
+                          <span style={{ fontSize: "12px", color: "#16a34a", fontWeight: 700 }}>{formatarValor(at.valorFinal)}</span>
+                        )}
+                        <button
+                          className="secondary-btn"
+                          style={{ padding: "4px 10px", fontSize: "11px", flexShrink: 0, marginLeft: "auto" }}
+                          onClick={() => abrirAtendimento(at)}
+                        >
+                          Ver
+                        </button>
+                      </div>
                     </div>
                   ))}
                 {filaFinalizados.filter((a) => !buscaFila || (a.pacienteNome || "").toLowerCase().includes(buscaFila.toLowerCase())).length === 0 && (
-                  <div className="odonto-fila-vazia">Nenhum finalizado ainda.</div>
+                  <div style={{ textAlign: "center", padding: "24px 8px", color: "#94a3b8", fontSize: "12px" }}>
+                    {buscaFila ? "Nenhum resultado." : "Nenhum finalizado ainda."}
+                  </div>
                 )}
               </div>
             </div>
