@@ -1,19 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  addDoc,
-  collection,
-  deleteDoc,
-  doc,
-  getDocs,
-  serverTimestamp,
-  updateDoc,
-} from "firebase/firestore";
-import {
-  EmailAuthProvider,
-  reauthenticateWithCredential,
-} from "firebase/auth";
-
-import { auth, db } from "../services/firebase";
+import api from "../services/api";
 import { useAuth } from "../context/AuthContext";
 import {
   ESPECIALIDADES_MEDICO,
@@ -533,7 +519,7 @@ export default function Pacientes({
   onAdicionarConsulta,
   onEncaminharParaPagamento,
 }) {
-  const { userData, firebaseUser } = useAuth();
+  const { userData } = useAuth();
 
   const [abaAtiva, setAbaAtiva] = useState("cadastro");
   const [buscaCadastro, setBuscaCadastro] = useState("");
@@ -601,18 +587,15 @@ export default function Pacientes({
     }
   }, [agendamento.data, consultas, especialidadeSelecionada]);
 
-  async function carregarProfissionaisOdonto(espFiltro = "") {
+  function carregarProfissionaisOdonto(espFiltro = "") {
+    setCarregandoProfissionaisOdonto(true);
     try {
-      setCarregandoProfissionaisOdonto(true);
-      const snap = await getDocs(collection(db, "users"));
-      const todos = snap.docs
-        .map((d) => ({ id: d.id, ...d.data() }))
-        .filter((u) => u.ativo !== false);
+      const todos = users.filter((u) => u.ativo !== false);
       const odonto = todos.filter(profissionalEhOdontologico);
       if (espFiltro) {
         const norm = normalizarTexto(espFiltro);
         const comEsp = odonto.filter((p) => {
-          if (!p.especialidade) return true; // sem especialidade definida: aparece para todas
+          if (!p.especialidade) return true;
           const pe = normalizarTexto(p.especialidade);
           return pe === norm || pe.includes(norm) || norm.includes(pe);
         });
@@ -620,15 +603,12 @@ export default function Pacientes({
       } else {
         setProfissionaisOdonto(odonto);
       }
-    } catch (e) {
-      console.error("Erro ao carregar profissionais odonto:", e);
-      setProfissionaisOdonto([]);
     } finally {
       setCarregandoProfissionaisOdonto(false);
     }
   }
 
-  async function carregarProfissionaisDisponiveis(dataSelecionada, espFiltro = "") {
+  function carregarProfissionaisDisponiveis(dataSelecionada, espFiltro = "") {
     if (!dataSelecionada) {
       setProfissionaisDisponiveis([]);
       setHorariosDisponiveis([]);
@@ -647,10 +627,7 @@ export default function Pacientes({
 
       const diaSemana = obterDiaSemana(dataSelecionada);
 
-      const usersSnap = await getDocs(collection(db, "users"));
-      const profissionais = usersSnap.docs
-        .map((d) => ({ id: d.id, ...d.data() }))
-        .filter((u) => u.ativo !== false);
+      const profissionais = users.filter((u) => u.ativo !== false);
 
       const disponiveis = profissionais
         .filter(profissionalEhAssistencial)
@@ -902,67 +879,57 @@ export default function Pacientes({
           "Atendimento odontológico";
         const dataHoje = new Date().toISOString().split("T")[0];
 
-        // 1. Criar agendamento odonto
-        const agRef = await addDoc(collection(db, "agendamentosOdonto"), {
-          pacienteNome: agendamento.nomePaciente,
-          pacienteId: "",
-          profissionalNome: profissionalOdontoNome || "",
-          profissionalId: profissionalOdontoId || "",
-          profissionalUid: profissionalOdontoId || "",
-          data: agendamento.data || dataHoje,
-          hora: horaOdonto || "",
-          tipoAtendimento: tipoAtend,
-          status: statusInicial,
-          procedimentosSolicitados: procedimentosSelecionadosOdonto,
-          valorEstimado: valorTotal,
-          observacoes: agendamento.observacoesRecepcao,
-          origemRecepcao: true,
-          pagamentoId: "",
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
+        // 1. Criar agendamento odonto via API MySQL
+        const agRes = await api.agendamentosOdonto.criar({
+          paciente_nome:              agendamento.nomePaciente,
+          profissional_nome:          profissionalOdontoNome || "",
+          profissional_id:            profissionalOdontoId ? Number(profissionalOdontoId) || null : null,
+          data:                       agendamento.data || dataHoje,
+          hora:                       horaOdonto || "",
+          tipo_atendimento:           tipoAtend,
+          status:                     statusInicial,
+          procedimentos_solicitados:  procedimentosSelecionadosOdonto,
+          observacoes:                agendamento.observacoesRecepcao || "",
         });
+        const agId = agRes?.data?.id;
 
-        // 2. Criar pagamento pendente vinculado
-        const pagRef = await addDoc(collection(db, "pagamentos"), {
-          paciente: agendamento.nomePaciente,
-          nomePaciente: agendamento.nomePaciente,
-          pacienteId: "",
-          profissional: profissionalOdontoNome || "",
-          profissionalId: profissionalOdontoId || "",
-          descricao: descricaoProc,
-          servico: "Odontologia",
-          procedimentos: procedimentosSelecionadosOdonto,
-          valor: valorTotal,
-          status: "pendente",
-          statusPagamento: "Pendente",
-          formaPagamento: "",
-          tipo: "odonto",
-          origem: "odonto",
-          agendamentoId: agRef.id,
-          atendimentoOdontoId: "",
-          data: agendamento.data || dataHoje,
-          dataPagamento: "",
-          createdAt: serverTimestamp(),
+        // 2. Criar pagamento pendente vinculado via API MySQL
+        const pagRes = await api.pagamentos.criar({
+          nome_paciente:   agendamento.nomePaciente,
+          descricao:       descricaoProc,
+          servico:         "Odontologia",
+          valor:           valorTotal,
+          desconto:        0,
+          valor_final:     valorTotal,
+          status:          "pendente",
+          status_pagamento:"Pendente",
+          forma_pagamento: "",
+          tipo:            "odonto",
+          origem:          "odonto",
+          profissional:    profissionalOdontoNome || "",
+          data:            agendamento.data || dataHoje,
+          data_pagamento:  "",
         });
+        const pagId = pagRes?.data?.id;
 
         // 3. Vincular pagamentoId no agendamento
-        await updateDoc(doc(db, "agendamentosOdonto", agRef.id), {
-          pagamentoId: pagRef.id,
-        });
+        if (agId && pagId) {
+          await api.agendamentosOdonto.atualizar(agId, { pagamento_id: pagId });
+        }
 
         limparAgendamento();
         if (onEncaminharParaPagamento) {
           onEncaminharParaPagamento({
-            pagamentoId: pagRef.id,
-            atendimentoId: agRef.id,
-            paciente: agendamento.nomePaciente,
-            cpf: agendamento.cpf || "",
-            telefone: agendamento.telefone || "",
+            pagamentoId:     pagId,
+            atendimentoId:   agId,
+            paciente:        agendamento.nomePaciente,
+            cpf:             agendamento.cpf || "",
+            telefone:        agendamento.telefone || "",
             tipoAtendimento: `Odontologia — ${tipoAtend}`,
-            profissional: profissionalOdontoNome || "",
-            valor: valorTotal,
-            descricao: descricaoProc,
-            tipo: "odonto",
+            profissional:    profissionalOdontoNome || "",
+            valor:           valorTotal,
+            descricao:       descricaoProc,
+            tipo:            "odonto",
           });
         } else {
           alert(
@@ -1026,45 +993,44 @@ export default function Pacientes({
         pagamentoId: "",
       });
 
-      // Create linked payment for medical appointment
+      // Criar pagamento vinculado via API MySQL
       let checkoutMedico = null;
       if (docRef?.id) {
         const valorConsulta = Number(agendamento.valorConsulta || 0);
-        const pagRef = await addDoc(collection(db, "pagamentos"), {
-          paciente: agendamento.nomePaciente,
-          nomePaciente: agendamento.nomePaciente,
-          cpf: agendamento.cpf,
-          telefone: agendamento.telefone,
-          profissional: agendamento.medico,
-          especialidade: agendamento.especialidade,
-          descricao: `Consulta — ${agendamento.especialidade}`,
-          servico: "Consulta Médica",
-          valor: valorConsulta,
-          status: "pendente",
-          statusPagamento: "Pendente",
-          formaPagamento: "",
-          tipo: "consulta",
-          origem: "medico",
-          consultaId: docRef.id,
-          agendamentoId: docRef.id,
-          data: agendamento.data,
-          dataPagamento: "",
-          createdAt: serverTimestamp(),
+        const pagRes = await api.pagamentos.criar({
+          nome_paciente:    agendamento.nomePaciente,
+          descricao:        `Consulta — ${agendamento.especialidade}`,
+          servico:          "Consulta Médica",
+          valor:            valorConsulta,
+          desconto:         0,
+          valor_final:      valorConsulta,
+          status:           "pendente",
+          status_pagamento: "Pendente",
+          forma_pagamento:  "",
+          tipo:             "consulta",
+          origem:           "medico",
+          profissional:     agendamento.medico || "",
+          atendimento_id:   docRef.id,
+          data:             agendamento.data,
+          data_pagamento:   "",
         });
-        await updateDoc(doc(db, "appointments", docRef.id), {
-          pagamentoId: pagRef.id,
-        });
+        const pagId = pagRes?.data?.id;
+
+        if (pagId) {
+          await api.atendimentos.atualizar(docRef.id, { pagamento_id: pagId });
+        }
+
         checkoutMedico = {
-          pagamentoId: pagRef.id,
-          atendimentoId: docRef.id,
-          paciente: agendamento.nomePaciente,
-          cpf: agendamento.cpf || "",
-          telefone: agendamento.telefone || "",
+          pagamentoId:     pagId,
+          atendimentoId:   docRef.id,
+          paciente:        agendamento.nomePaciente,
+          cpf:             agendamento.cpf || "",
+          telefone:        agendamento.telefone || "",
           tipoAtendimento: `Consulta — ${agendamento.especialidade}`,
-          profissional: agendamento.medico || "",
-          valor: valorConsulta,
-          descricao: `Consulta — ${agendamento.especialidade}`,
-          tipo: "consulta",
+          profissional:    agendamento.medico || "",
+          valor:           valorConsulta,
+          descricao:       `Consulta — ${agendamento.especialidade}`,
+          tipo:            "consulta",
         };
       }
 
@@ -1083,21 +1049,13 @@ export default function Pacientes({
   }
 
   async function validarSenhaAdministrador() {
-    if (!firebaseUser || !firebaseUser.email) {
-      alert("Não foi possível validar o usuário logado.");
-      return false;
-    }
-
     const senha = prompt("Digite sua senha de administrador para confirmar:");
-
     if (!senha) return false;
 
     try {
-      const credential = EmailAuthProvider.credential(firebaseUser.email, senha);
-      await reauthenticateWithCredential(auth.currentUser, credential);
+      await api.auth.login(userData?.login || userData?.email, senha);
       return true;
-    } catch (error) {
-      console.error("Erro ao validar senha:", error);
+    } catch {
       alert("Senha inválida. Exclusão cancelada.");
       return false;
     }
@@ -1127,20 +1085,7 @@ export default function Pacientes({
     }
 
     try {
-      await addDoc(collection(db, "auditLogs"), {
-        tipo: "EXCLUSAO_PACIENTE",
-        pacienteId: paciente.id,
-        pacienteNome: paciente.nome || "",
-        pacienteCpf: paciente.cpf || "",
-        motivo,
-        excluidoPor:
-          userData?.nome || userData?.name || firebaseUser?.email || "Administrador",
-        excluidoPorEmail: firebaseUser?.email || "",
-        criadoEm: serverTimestamp(),
-      });
-
-      await deleteDoc(doc(db, "patients", paciente.id));
-
+      await api.pacientes.excluir(paciente.id);
       alert("Cadastro excluído com sucesso.");
     } catch (error) {
       console.error("Erro ao excluir paciente:", error);

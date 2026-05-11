@@ -1,19 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useAuth } from "../context/AuthContext";
-import {
-  addDoc,
-  collection,
-  deleteDoc,
-  doc,
-  getDocs,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  updateDoc,
-  where,
-} from "firebase/firestore";
-import { db } from "../services/firebase";
+import api from "../services/api";
 
 const PROCEDIMENTOS_PADRAO = [
   { nome: "Consulta Odontológica", categoria: "Consulta", valor: 150, tempoEstimado: 30, status: "ativo" },
@@ -128,7 +114,6 @@ const CATEGORIA_CORES = {
 };
 
 export default function Odonto({ pacientes = [], users = [], userData = null, pagamentos = [], procedimentosOdonto = [] }) {
-  const { firebaseUser } = useAuth();
   const isAdmin =
     userData?.role === "admin" ||
     (Array.isArray(userData?.permissions) && userData.permissions.includes("administracao"));
@@ -139,7 +124,6 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
   const [agendamentos, setAgendamentos] = useState([]);
   const [atendimentos, setAtendimentos] = useState([]);
   const [procedimentos, setProcedimentos] = useState([]);
-  const [seeded, setSeeded] = useState(false);
 
   // ── Atendimento aberto ──────────────────────────────────────────────────────
   const [atendimentoAberto, setAtendimentoAberto] = useState(null);
@@ -176,57 +160,52 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
     status: "ativo",
   });
 
-  // ── Firestore subscriptions ─────────────────────────────────────────────────
+  // ── Polling via API MySQL ─────────────────────────────────────────────────
   useEffect(() => {
-    const role = userData?.role || "";
-    const uid = firebaseUser?.uid || "";
-    const podeVerTodos =
-      isAdmin || role === "recepcao" || !uid;
+    const meuId = userData?.id ? Number(userData.id) : null;
+    const podeVerTodos = isAdmin || userData?.role === "recepcao";
 
-    const qAg = podeVerTodos
-      ? query(collection(db, "agendamentosOdonto"), orderBy("createdAt", "desc"))
-      : query(collection(db, "agendamentosOdonto"), where("profissionalId", "==", uid));
+    async function carregarAgendamentos() {
+      try {
+        const params = {};
+        if (!podeVerTodos && meuId) params.profissional_id = meuId;
+        const res = await api.agendamentosOdonto.listar(params);
+        setAgendamentos(res.data || []);
+      } catch { setAgendamentos([]); }
+    }
 
-    const unsubAg = onSnapshot(qAg, (snap) => {
-      const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      if (!podeVerTodos) docs.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-      setAgendamentos(docs);
-    }, (err) => { console.error("agendamentosOdonto:", err); setAgendamentos([]); });
+    async function carregarAtendimentos() {
+      try {
+        const res = await api.atendimentosOdonto.listar();
+        setAtendimentos(res.data || []);
+      } catch { setAtendimentos([]); }
+    }
 
-    const qAt = podeVerTodos
-      ? query(collection(db, "atendimentosOdonto"), orderBy("createdAt", "desc"))
-      : query(collection(db, "atendimentosOdonto"), where("profissionalId", "==", uid));
-
-    const unsubAt = onSnapshot(qAt, (snap) => {
-      const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      if (!podeVerTodos) docs.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-      setAtendimentos(docs);
-    }, (err) => { console.error("atendimentosOdonto (at):", err); setAtendimentos([]); });
-
-    const unsubProc = onSnapshot(
-      query(collection(db, "procedimentosOdonto"), orderBy("nome", "asc")),
-      async (snap) => {
-        const lista = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    async function carregarProcedimentos() {
+      try {
+        const res = await api.procedimentosOdonto.listar();
+        const lista = res.data || [];
         setProcedimentos(lista);
-        if (lista.length === 0 && !seeded) {
-          setSeeded(true);
-          for (const proc of PROCEDIMENTOS_PADRAO) {
-            await addDoc(collection(db, "procedimentosOdonto"), {
-              ...proc,
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
-          }
+        if (lista.length === 0) {
+          await api.procedimentosOdonto.seed();
+          const res2 = await api.procedimentosOdonto.listar();
+          setProcedimentos(res2.data || []);
         }
-      }
-    );
+      } catch { setProcedimentos([]); }
+    }
+
+    carregarAgendamentos();
+    carregarAtendimentos();
+    carregarProcedimentos();
+
+    const timerAg = setInterval(carregarAgendamentos, 30000);
+    const timerAt = setInterval(carregarAtendimentos, 15000);
 
     return () => {
-      unsubAg();
-      unsubAt();
-      unsubProc();
+      clearInterval(timerAg);
+      clearInterval(timerAt);
     };
-  }, [firebaseUser?.uid, userData?.role, isAdmin]);
+  }, [userData?.id, userData?.role, isAdmin]);
 
   // ── Computed ────────────────────────────────────────────────────────────────
   const hoje = getDataHoje();
@@ -234,16 +213,16 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
   const agendamentosFiltrados = useMemo(() => {
     const role = userData?.role || "";
     if (isAdmin || role === "admin" || role === "recepcao") return agendamentos;
-    const uid = firebaseUser?.uid || "";
-    if (!uid) return [];
+    const meuId = String(userData?.id || "");
+    if (!meuId) return [];
     const nome = (userData?.nome || userData?.name || "").toLowerCase().trim();
     return agendamentos.filter((ag) => {
-      const pid = (ag.profissionalId || ag.profissionalUid || "").trim();
-      if (pid) return pid === uid;
+      const pid = String(ag.profissionalId || "").trim();
+      if (pid) return pid === meuId;
       if (!nome) return false;
       return (ag.profissionalNome || "").toLowerCase().trim() === nome;
     });
-  }, [agendamentos, userData, firebaseUser, isAdmin]);
+  }, [agendamentos, userData, isAdmin]);
 
   const agendamentosHoje = useMemo(
     () => agendamentosFiltrados.filter((a) => a.data === hoje),
@@ -254,16 +233,16 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
   const atendimentosFiltrados = useMemo(() => {
     const role = userData?.role || "";
     if (isAdmin || role === "admin" || role === "recepcao") return atendimentos;
-    const uid = firebaseUser?.uid || "";
-    if (!uid) return [];
+    const meuId = String(userData?.id || "");
+    if (!meuId) return [];
     const nome = (userData?.nome || userData?.name || "").toLowerCase().trim();
     return atendimentos.filter((at) => {
-      const pid = (at.profissionalId || at.profissionalUid || "").trim();
-      if (pid) return pid === uid;
+      const pid = String(at.profissionalId || "").trim();
+      if (pid) return pid === meuId;
       if (!nome) return false;
       return (at.profissionalNome || "").toLowerCase().trim() === nome;
     });
-  }, [atendimentos, userData, firebaseUser, isAdmin]);
+  }, [atendimentos, userData, isAdmin]);
 
   const filaAguardando = useMemo(
     () =>
@@ -306,13 +285,12 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
 
   // ── Agendamentos ────────────────────────────────────────────────────────────
   function abrirFormAgendamento() {
-    const uid = firebaseUser?.uid || "";
     const nome = userData?.nome || userData?.name || "";
     setFormAgendamento({
       pacienteNome: "",
       pacienteId: "",
       profissionalNome: isAdmin ? "" : nome,
-      profissionalId: isAdmin ? "" : uid,
+      profissionalId: isAdmin ? "" : String(userData?.id || ""),
       data: getDataHoje(),
       hora: "",
       tipoAtendimento: "Consulta",
@@ -332,54 +310,58 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
       return;
     }
     try {
-      await addDoc(collection(db, "agendamentosOdonto"), {
-        ...formAgendamento,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+      await api.agendamentosOdonto.criar({
+        paciente_nome:    formAgendamento.pacienteNome,
+        paciente_id:      formAgendamento.pacienteId || null,
+        profissional_nome: formAgendamento.profissionalNome,
+        profissional_id:  formAgendamento.profissionalId || null,
+        data:             formAgendamento.data,
+        hora:             formAgendamento.hora,
+        tipo_atendimento: formAgendamento.tipoAtendimento,
+        status:           formAgendamento.status || "agendado",
+        observacoes:      formAgendamento.observacoes,
       });
       setFormAgendamentoAberto(false);
+      const res = await api.agendamentosOdonto.listar();
+      setAgendamentos(res.data || []);
     } catch (e) {
       alert("Erro ao salvar agendamento: " + e.message);
     }
   }
 
   async function atualizarStatusAgendamento(id, novoStatus) {
-    await updateDoc(doc(db, "agendamentosOdonto", id), {
-      status: novoStatus,
-      updatedAt: serverTimestamp(),
-    });
+    await api.agendamentosOdonto.atualizar(id, { status: novoStatus });
   }
 
   async function encaminharParaFila(ag) {
     try {
-      const atRef = await addDoc(collection(db, "atendimentosOdonto"), {
-        agendamentoId: ag.id,
-        pacienteId: ag.pacienteId || "",
-        pacienteNome: ag.pacienteNome,
-        profissionalId: ag.profissionalId || "",
-        profissionalNome: ag.profissionalNome || "",
-        tipoAtendimento: ag.tipoAtendimento || "Consulta",
-        observacoesRecepcao: ag.observacoes || ag.observacoesRecepcao || "",
-        status: "aguardando",
-        statusPagamento: ag.statusPagamento || (ag.pagamentoId ? "pendente" : ""),
-        anamnese: null,
-        procedimentosSolicitados: ag.procedimentosSolicitados || [],
-        procedimentosRealizados: [],
-        total: ag.valorEstimado || 0,
-        desconto: 0,
-        valorFinal: ag.valorEstimado || 0,
-        financeiroStatus: ag.statusPagamento || (ag.pagamentoId ? "pendente" : ""),
-        pagamentoId: ag.pagamentoId || "",
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+      const res = await api.atendimentosOdonto.criar({
+        agendamento_id:          ag.id,
+        paciente_id:             ag.pacienteId || null,
+        paciente_nome:           ag.pacienteNome,
+        profissional_id:         ag.profissionalId || null,
+        profissional_nome:       ag.profissionalNome || "",
+        tipo_atendimento:        ag.tipoAtendimento || "Consulta",
+        observacoes_recepcao:    ag.observacoes || ag.observacoesRecepcao || "",
+        status:                  "aguardando",
+        status_pagamento:        ag.statusPagamento || (ag.pagamentoId ? "pendente" : ""),
+        procedimentos_solicitados: ag.procedimentosSolicitados || [],
+        procedimentos_realizados:  [],
+        total:                   ag.valorEstimado || 0,
+        desconto:                0,
+        valor_final:             ag.valorEstimado || 0,
+        pagamento_id:            ag.pagamentoId || null,
+        data:                    ag.data || "",
+        hora:                    ag.hora || "",
       });
       await atualizarStatusAgendamento(ag.id, "aguardando");
       if (ag.pagamentoId) {
-        await updateDoc(doc(db, "pagamentos", ag.pagamentoId), {
-          atendimentoOdontoId: atRef.id,
-          updatedAt: serverTimestamp(),
+        await api.pagamentos.atualizar(ag.pagamentoId, {
+          atendimento_odonto_id: String(res.data.id),
         });
       }
+      const resAt = await api.atendimentosOdonto.listar();
+      setAtendimentos(resAt.data || []);
       setAbaAtual("fila");
     } catch (e) {
       alert("Erro: " + e.message);
@@ -402,10 +384,7 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
 
   async function iniciarAtendimento() {
     if (!atendimentoAberto) return;
-    await updateDoc(doc(db, "atendimentosOdonto", atendimentoAberto.id), {
-      status: "em_atendimento",
-      updatedAt: serverTimestamp(),
-    });
+    await api.atendimentosOdonto.atualizar(atendimentoAberto.id, { status: "em_atendimento" });
     setAtendimentoAberto((prev) => ({ ...prev, status: "em_atendimento" }));
   }
 
@@ -415,50 +394,17 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
     const desconto = Number(descontoGeral) || 0;
     const valorFinal = Math.max(0, total - desconto);
     try {
-      await updateDoc(doc(db, "atendimentosOdonto", atendimentoAberto.id), {
-        anamnese: formAnamnese,
-        procedimentosRealizados: procedimentosSelecionados,
+      await api.atendimentosOdonto.atualizar(atendimentoAberto.id, {
+        anamnese:                formAnamnese,
+        procedimentos_realizados: procedimentosSelecionados,
         total,
         desconto,
-        valorFinal,
-        observacoesAtendimento: obsAtendimento,
-        updatedAt: serverTimestamp(),
+        valor_final:             valorFinal,
+        observacoes_atendimento: obsAtendimento,
       });
       alert("Atendimento salvo com sucesso.");
     } catch (e) {
       alert("Erro ao salvar: " + e.message);
-    }
-  }
-
-  async function sincMovOdonto(pagamentoId, valorFinal) {
-    try {
-      const snap = await getDocs(
-        query(
-          collection(db, "movimentacoes"),
-          where("referenciaId", "==", pagamentoId),
-          where("origem", "==", "pagamentos")
-        )
-      );
-      const dados = {
-        referenciaId: pagamentoId,
-        origem: "pagamentos",
-        tipo: "Receita",
-        categoria: "Odontologia",
-        descricao: atendimentoAberto?.tipoAtendimento || "Atendimento odontológico",
-        valor: valorFinal,
-        data: getDataHoje(),
-        nomePaciente: atendimentoAberto?.pacienteNome || "",
-        formaPagamento: formaPagamentoOdonto,
-        status: statusPagamentoOdonto,
-        atualizadoEm: serverTimestamp(),
-      };
-      if (!snap.empty) {
-        await updateDoc(doc(db, "movimentacoes", snap.docs[0].id), dados);
-      } else {
-        await addDoc(collection(db, "movimentacoes"), { ...dados, criadoEm: serverTimestamp() });
-      }
-    } catch (e) {
-      console.error("Erro ao sincronizar movimentação odonto:", e);
     }
   }
 
@@ -478,82 +424,80 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
       procedimentosSelecionados.map((p) => p.nome).join(", ") ||
       (atendimentoAberto.procedimentosSolicitados || []).map((p) => p.nome).join(", ") ||
       "Atendimento odontológico";
+    const statusPag = statusPagamentoOdonto === "pago" ? "Pago"
+      : statusPagamentoOdonto === "cortesia" ? "Cortesia"
+      : "Pendente";
 
     try {
-      await updateDoc(doc(db, "atendimentosOdonto", atendimentoAberto.id), {
-        status: "finalizado",
-        anamnese: formAnamnese,
-        procedimentosRealizados: procedimentosSelecionados,
+      let pagId = atendimentoAberto.pagamentoId || null;
+
+      if (pagId) {
+        await api.pagamentos.atualizar(pagId, {
+          valor:                  valorFinal,
+          valor_final:            valorFinal,
+          status:                 statusPagamentoOdonto,
+          status_pagamento:       statusPag,
+          forma_pagamento:        formaPagamentoOdonto,
+          data_pagamento:         dataHoje,
+          descricao:              descricaoProcedimentos,
+          atendimento_odonto_id:  String(atendimentoAberto.id),
+        });
+      } else {
+        const pagRes = await api.pagamentos.criar({
+          paciente_id:           atendimentoAberto.pacienteId || null,
+          nome_paciente:         atendimentoAberto.pacienteNome,
+          descricao:             descricaoProcedimentos,
+          servico:               "Odontologia",
+          valor:                 valorFinal,
+          valor_final:           valorFinal,
+          status:                statusPagamentoOdonto,
+          status_pagamento:      statusPag,
+          forma_pagamento:       formaPagamentoOdonto,
+          tipo:                  "odonto",
+          origem:                "odonto",
+          atendimento_odonto_id: String(atendimentoAberto.id),
+          profissional:          atendimentoAberto.profissionalNome || "",
+          data:                  dataHoje,
+          data_pagamento:        dataHoje,
+        });
+        pagId = pagRes.data.id;
+      }
+
+      await api.atendimentosOdonto.atualizar(atendimentoAberto.id, {
+        status:                  "finalizado",
+        anamnese:                formAnamnese,
+        procedimentos_realizados: procedimentosSelecionados,
         total,
         desconto,
-        valorFinal,
-        formaPagamento: formaPagamentoOdonto,
-        statusPagamento: statusPagamentoOdonto,
-        observacoesAtendimento: obsAtendimento,
-        finalizadoEm: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        valor_final:             valorFinal,
+        forma_pagamento:         formaPagamentoOdonto,
+        status_pagamento:        statusPagamentoOdonto,
+        observacoes_atendimento: obsAtendimento,
+        pagamento_id:            pagId,
         financeiro: {
-          pacienteId: atendimentoAberto.pacienteId || "",
-          pacienteNome: atendimentoAberto.pacienteNome,
-          atendimentoId: atendimentoAberto.id,
-          descricao: descricaoProcedimentos,
-          valor: total,
+          pacienteId:     atendimentoAberto.pacienteId || "",
+          pacienteNome:   atendimentoAberto.pacienteNome,
+          atendimentoId:  atendimentoAberto.id,
+          descricao:      descricaoProcedimentos,
+          valor:          total,
           desconto,
           valorFinal,
           statusFinanceiro: statusPagamentoOdonto,
-          formaPagamento: formaPagamentoOdonto,
-          dataLancamento: new Date().toISOString(),
-          responsavel: atendimentoAberto.profissionalNome || "",
+          formaPagamento:   formaPagamentoOdonto,
+          dataLancamento:   new Date().toISOString(),
+          responsavel:      atendimentoAberto.profissionalNome || "",
         },
       });
 
-      // Atualizar agendamento vinculado
       if (atendimentoAberto.agendamentoId) {
-        await updateDoc(doc(db, "agendamentosOdonto", atendimentoAberto.agendamentoId), {
-          status: "finalizado",
-          updatedAt: serverTimestamp(),
-        });
+        await api.agendamentosOdonto.atualizar(atendimentoAberto.agendamentoId, { status: "finalizado" });
       }
-
-      let pagId = atendimentoAberto.pagamentoId || null;
-      if (pagId) {
-        await updateDoc(doc(db, "pagamentos", pagId), {
-          valor: valorFinal,
-          status: statusPagamentoOdonto,
-          statusPagamento: statusPagamentoOdonto === "pago" ? "Pago" : statusPagamentoOdonto === "cortesia" ? "Cortesia" : "Pendente",
-          formaPagamento: formaPagamentoOdonto,
-          dataPagamento: dataHoje,
-          descricao: descricaoProcedimentos,
-          atendimentoOdontoId: atendimentoAberto.id,
-          updatedAt: serverTimestamp(),
-        });
-      } else {
-        const pagRef = await addDoc(collection(db, "pagamentos"), {
-          pacienteId: atendimentoAberto.pacienteId || "",
-          paciente: atendimentoAberto.pacienteNome,
-          nomePaciente: atendimentoAberto.pacienteNome,
-          descricao: descricaoProcedimentos,
-          servico: "Odontologia",
-          valor: valorFinal,
-          status: statusPagamentoOdonto,
-          statusPagamento: statusPagamentoOdonto === "pago" ? "Pago" : statusPagamentoOdonto === "cortesia" ? "Cortesia" : "Pendente",
-          formaPagamento: formaPagamentoOdonto,
-          tipo: "odonto",
-          origem: "odonto",
-          atendimentoOdontoId: atendimentoAberto.id,
-          profissional: atendimentoAberto.profissionalNome || "",
-          data: dataHoje,
-          dataPagamento: dataHoje,
-          createdAt: serverTimestamp(),
-        });
-        pagId = pagRef.id;
-      }
-
-      await sincMovOdonto(pagId, valorFinal);
 
       setAtendimentoAberto(null);
       setFormaPagamentoOdonto("dinheiro");
       setStatusPagamentoOdonto("pendente");
+      const resAt = await api.atendimentosOdonto.listar();
+      setAtendimentos(resAt.data || []);
       alert("Atendimento finalizado. Financeiro e Pagamentos atualizados.");
     } catch (e) {
       alert("Erro ao finalizar: " + e.message);
@@ -623,20 +567,20 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
       return;
     }
     const dados = {
-      ...formProc,
-      valor: Number(formProc.valor),
-      tempoEstimado: Number(formProc.tempoEstimado) || 0,
-      updatedAt: serverTimestamp(),
+      nome:           formProc.nome,
+      categoria:      formProc.categoria,
+      valor:          Number(formProc.valor),
+      tempo_estimado: Number(formProc.tempoEstimado) || 0,
+      status:         formProc.status || "ativo",
     };
     try {
       if (editandoProc) {
-        await updateDoc(doc(db, "procedimentosOdonto", editandoProc.id), dados);
+        await api.procedimentosOdonto.atualizar(editandoProc.id, dados);
       } else {
-        await addDoc(collection(db, "procedimentosOdonto"), {
-          ...dados,
-          createdAt: serverTimestamp(),
-        });
+        await api.procedimentosOdonto.criar(dados);
       }
+      const res = await api.procedimentosOdonto.listar();
+      setProcedimentos(res.data || []);
       setFormProcAberto(false);
     } catch (e) {
       alert("Erro: " + e.message);
@@ -645,10 +589,9 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
 
   async function toggleStatusProc(proc) {
     const novoStatus = proc.status === "ativo" ? "inativo" : "ativo";
-    await updateDoc(doc(db, "procedimentosOdonto", proc.id), {
-      status: novoStatus,
-      updatedAt: serverTimestamp(),
-    });
+    await api.procedimentosOdonto.atualizar(proc.id, { status: novoStatus });
+    const res = await api.procedimentosOdonto.listar();
+    setProcedimentos(res.data || []);
   }
 
   async function excluirProc(proc) {
@@ -660,7 +603,9 @@ export default function Odonto({ pacientes = [], users = [], userData = null, pa
       return;
     }
     if (!window.confirm(`Excluir "${proc.nome}"?`)) return;
-    await deleteDoc(doc(db, "procedimentosOdonto", proc.id));
+    await api.procedimentosOdonto.excluir(proc.id);
+    const res = await api.procedimentosOdonto.listar();
+    setProcedimentos(res.data || []);
   }
 
   // ── Tela de atendimento ─────────────────────────────────────────────────────

@@ -79,7 +79,7 @@ export default function Agendamentos({
   agendamentosOdonto = [],
   onAbrirAtendimento,
 }) {
-  const { userData, firebaseUser } = useAuth();
+  const { userData } = useAuth();
 
   const [mesSelecionado, setMesSelecionado] = useState(obterMesAtual());
   const [diaSelecionado, setDiaSelecionado] = useState("");
@@ -104,12 +104,10 @@ export default function Agendamentos({
       userData?.usuario,
       userData?.login,
       userData?.email,
-      firebaseUser?.displayName,
-      firebaseUser?.email,
     ]
       .filter(Boolean)
       .map(normalizarTexto);
-  }, [userData, firebaseUser]);
+  }, [userData]);
 
   // Normalize medical consultas
   const consultasMedNorm = useMemo(() => {
@@ -149,10 +147,12 @@ export default function Agendamentos({
       role === "enfermagem" ||
       (Array.isArray(userData?.permissions) && userData.permissions.includes("administracao"));
     if (podeVerTodos) return true;
-    const uid = firebaseUser?.uid || "";
-    if (!uid) return false;
-    const idConsulta = (consulta.medicoId || consulta.profissionalId || "").trim();
-    if (idConsulta) return idConsulta === uid;
+    const meuId = String(userData?.id || "");
+    if (!meuId) return false;
+    const idConsulta = consulta.usuarioId != null
+      ? String(consulta.usuarioId)
+      : (consulta.profissionalId || "").trim();
+    if (idConsulta) return idConsulta === meuId;
     // Name-based fallback — exact match only, for legacy entries without IDs
     const nomes = [
       consulta.medico,
@@ -169,7 +169,7 @@ export default function Agendamentos({
   const todasConsultas = useMemo(() => {
     const todas = [...consultasMedNorm, ...consultasOdontoNorm];
     return todas.filter(pertenceAoProfissionalLogado);
-  }, [consultasMedNorm, consultasOdontoNorm, identificadoresUsuario, userData, firebaseUser]);
+  }, [consultasMedNorm, consultasOdontoNorm, identificadoresUsuario, userData]);
 
   const consultasAtivas = useMemo(() => {
     return todasConsultas.filter((c) => normalizarStatus(c.status) !== "finalizado");

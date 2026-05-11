@@ -1,17 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  addDoc,
-  collection,
-  doc,
-  getDocs,
-  query,
-  serverTimestamp,
-  updateDoc,
-  where,
-} from "firebase/firestore";
-
-import { db } from "../services/firebase";
 import { useAuth } from "../context/AuthContext";
+import api from "../services/api";
 
 function normalizarTexto(valor) {
   return (valor || "")
@@ -52,45 +41,8 @@ function obterDataHoje() {
   return `${ano}-${mes}-${dia}`;
 }
 
-async function sincMovimentacao(db, docId, pagamento, valor, statusNorm, userData, firebaseUser) {
-  try {
-    const snap = await getDocs(
-      query(
-        collection(db, "movimentacoes"),
-        where("referenciaId", "==", docId),
-        where("origem", "==", "pagamentos")
-      )
-    );
-    const dados = {
-      referenciaId: docId,
-      origem: "pagamentos",
-      tipo: "Receita",
-      categoria: "Receita",
-      descricao: pagamento.tipoAtendimento || "",
-      valor,
-      data: pagamento.dataPagamento || "",
-      nomePaciente: pagamento.paciente || "",
-      formaPagamento: pagamento.formaPagamento || "",
-      status: statusNorm,
-      atualizadoEm: serverTimestamp(),
-    };
-    if (!snap.empty) {
-      await updateDoc(doc(db, "movimentacoes", snap.docs[0].id), dados);
-    } else {
-      await addDoc(collection(db, "movimentacoes"), {
-        ...dados,
-        criadoEm: serverTimestamp(),
-        criadoPor: userData?.nome || userData?.name || firebaseUser?.email || "Usuário",
-        criadoPorEmail: firebaseUser?.email || "",
-      });
-    }
-  } catch (e) {
-    console.error("Erro ao sincronizar movimentação:", e);
-  }
-}
-
 export default function Pagamentos({ pacientes = [], consultas = [], pagamentos = [], pagamentoCheckout = null, onLimparCheckout, onIrParaFinanceiro, onIrParaRelatorios }) {
-  const { userData, firebaseUser } = useAuth();
+  const { userData } = useAuth();
 
   const [salvandoPagamento, setSalvandoPagamento] = useState(false);
   const [pagamentoIdParaAtualizar, setPagamentoIdParaAtualizar] = useState(null);
@@ -301,88 +253,43 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentos 
     try {
       setSalvandoPagamento(true);
 
+      const statusNorm = pagamento.statusPagamento.toLowerCase();
+
       if (pagamentoIdParaAtualizar) {
-        const statusNorm = pagamento.statusPagamento.toLowerCase();
-        await updateDoc(doc(db, "pagamentos", pagamentoIdParaAtualizar), {
-          paciente: pagamento.paciente,
-          cpf: pagamento.cpf || "",
-          telefone: pagamento.telefone || "",
-          atendimentoId: pagamento.atendimentoId || "",
-          tipoAtendimento: pagamento.tipoAtendimento,
-          valor: valorNumerico,
-          formaPagamento: pagamento.formaPagamento,
-          statusPagamento: pagamento.statusPagamento,
-          status: statusNorm,
-          dataPagamento: pagamento.dataPagamento,
-          observacoes: pagamento.observacoes || "",
-          atualizadoPor: userData?.nome || userData?.name || firebaseUser?.email || "Usuário",
-          atualizadoEm: serverTimestamp(),
+        // Atualizar pagamento existente via API MySQL
+        await api.pagamentos.atualizar(pagamentoIdParaAtualizar, {
+          nome_paciente:    pagamento.paciente,
+          descricao:        pagamento.tipoAtendimento,
+          valor:            valorNumerico,
+          valor_final:      valorNumerico,
+          forma_pagamento:  pagamento.formaPagamento,
+          status_pagamento: pagamento.statusPagamento,
+          status:           statusNorm,
+          data_pagamento:   pagamento.dataPagamento,
+          observacoes:      pagamento.observacoes || "",
         });
 
-        // Sincroniza status no documento do agendamento vinculado
-        if (pagamentoCheckout?.atendimentoId) {
-          const colecao =
-            pagamentoCheckout.tipo === "odonto" ? "agendamentosOdonto" : "appointments";
-          await updateDoc(doc(db, colecao, pagamentoCheckout.atendimentoId), {
-            statusPagamento: statusNorm,
-            atualizadoEm: serverTimestamp(),
-          });
-        }
 
-        // Caso o dentista já tenha movido para a fila antes do pagamento:
-        // atualiza também o atendimentosOdonto vinculado pelo pagamentoId
-        if (pagamentoCheckout?.tipo === "odonto") {
-          try {
-            const snapAt = await getDocs(
-              query(
-                collection(db, "atendimentosOdonto"),
-                where("pagamentoId", "==", pagamentoIdParaAtualizar)
-              )
-            );
-            for (const d of snapAt.docs) {
-              await updateDoc(doc(db, "atendimentosOdonto", d.id), {
-                statusPagamento: statusNorm,
-                financeiroStatus: statusNorm,
-                atualizadoEm: serverTimestamp(),
-              });
-            }
-          } catch (_) {}
-        }
-
-        if (statusNorm === "pago" || statusNorm === "paga") {
-          await sincMovimentacao(db, pagamentoIdParaAtualizar, pagamento, valorNumerico, statusNorm, userData, firebaseUser);
-        }
       } else {
-        const statusNorm = pagamento.statusPagamento.toLowerCase();
-        const docRef = await addDoc(collection(db, "pagamentos"), {
-          pacienteId: pagamento.pacienteId || "",
-          paciente: pagamento.paciente,
-          cpf: pagamento.cpf || "",
-          telefone: pagamento.telefone || "",
-          atendimentoId: pagamento.atendimentoId || "",
-          tipoAtendimento: pagamento.tipoAtendimento,
-          valor: valorNumerico,
-          formaPagamento: pagamento.formaPagamento,
-          statusPagamento: pagamento.statusPagamento,
-          status: statusNorm,
-          dataPagamento: pagamento.dataPagamento,
-          data: pagamento.dataPagamento,
-          nomePaciente: pagamento.paciente,
-          descricao: pagamento.tipoAtendimento,
-          tipo: "Entrada",
-          categoria: "Receita",
-          observacoes: pagamento.observacoes || "",
-          origem: "Pagamentos",
-          tipoMovimentacao: "Receita",
-          criadoPor: userData?.nome || userData?.name || firebaseUser?.email || "Usuário",
-          criadoPorEmail: firebaseUser?.email || "",
-          criadoEm: serverTimestamp(),
-          createdAt: serverTimestamp(),
+        // Criar novo pagamento via API MySQL
+        await api.pagamentos.criar({
+          paciente_id:             pagamento.pacienteId || null,
+          nome_paciente:           pagamento.paciente,
+          descricao:               pagamento.tipoAtendimento,
+          servico:                 pagamento.tipoAtendimento,
+          valor:                   valorNumerico,
+          desconto:                0,
+          valor_final:             valorNumerico,
+          status:                  statusNorm,
+          status_pagamento:        pagamento.statusPagamento,
+          forma_pagamento:         pagamento.formaPagamento,
+          tipo:                    "Entrada",
+          origem:                  "Pagamentos",
+          atendimento_odonto_id:   pagamento.atendimentoId ? String(pagamento.atendimentoId) : null,
+          data:                    pagamento.dataPagamento,
+          data_pagamento:          pagamento.dataPagamento,
+          observacoes:             pagamento.observacoes || "",
         });
-
-        if (statusNorm === "pago" || statusNorm === "paga") {
-          await sincMovimentacao(db, docRef.id, pagamento, valorNumerico, statusNorm, userData, firebaseUser);
-        }
       }
 
       setPagamentoIdParaAtualizar(null);

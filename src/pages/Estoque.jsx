@@ -1,17 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  addDoc,
-  collection,
-  deleteDoc,
-  doc,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  updateDoc,
-} from "firebase/firestore";
-import { db } from "../services/firebase";
 import { useAuth } from "../context/AuthContext";
+import api from "../services/api";
 
 const CATEGORIAS = [
   "Medicamento",
@@ -95,8 +84,8 @@ function normText(s) {
   return String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 }
 
-export default function Estoque({ estoque = [] }) {
-  const { userData, firebaseUser } = useAuth();
+export default function Estoque({ estoque = [], onRefresh = () => {} }) {
+  const { userData } = useAuth();
   const [movimentacoes, setMovimentacoes] = useState([]);
   const [aba, setAba] = useState("itens");
   const [busca, setBusca] = useState("");
@@ -111,11 +100,15 @@ export default function Estoque({ estoque = [] }) {
   const [expandido, setExpandido] = useState(null);
 
   useEffect(() => {
-    const q = query(collection(db, "movimentacoesEstoque"), orderBy("criadoEm", "desc"));
-    const unsub = onSnapshot(q, (snap) => {
-      setMovimentacoes(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    }, (err) => console.error("movimentacoesEstoque:", err));
-    return () => unsub();
+    async function carregar() {
+      try {
+        const r = await api.estoque.listarMovimentacoes();
+        setMovimentacoes(r.data || []);
+      } catch { setMovimentacoes([]); }
+    }
+    carregar();
+    const t = setInterval(carregar, 30000);
+    return () => clearInterval(t);
   }, []);
 
   const kpis = useMemo(() => {
@@ -196,29 +189,25 @@ export default function Estoque({ estoque = [] }) {
     try {
       setSalvando(true);
       const dados = {
-        nome: form.nome.trim(),
-        categoria: form.categoria,
-        unidade: form.unidade,
-        quantidade: Number(form.quantidade),
-        minimo: Number(form.minimo),
-        fornecedor: form.fornecedor.trim(),
+        nome:          form.nome.trim(),
+        categoria:     form.categoria,
+        unidade:       form.unidade,
+        quantidade:    Number(form.quantidade),
+        minimo:        Number(form.minimo),
+        fornecedor:    form.fornecedor.trim(),
         codigoInterno: form.codigoInterno.trim(),
-        validade: form.validade || "",
+        validade:      form.validade || null,
         precoUnitario: form.precoUnitario !== "" ? Number(form.precoUnitario) : 0,
-        localizacao: form.localizacao.trim(),
-        observacoes: form.observacoes.trim(),
-        atualizadoEm: serverTimestamp(),
+        localizacao:   form.localizacao.trim(),
+        observacoes:   form.observacoes.trim(),
       };
       if (itemEditando) {
-        await updateDoc(doc(db, "estoque", itemEditando.id), dados);
+        await api.estoque.atualizar(itemEditando.id, dados);
       } else {
-        await addDoc(collection(db, "estoque"), {
-          ...dados,
-          criadoPor: userData?.nome || firebaseUser?.email || "Usuário",
-          criadoEm: serverTimestamp(),
-        });
+        await api.estoque.criar(dados);
       }
       setModalItem(false);
+      await onRefresh();
     } catch (e) {
       console.error(e);
       alert("Erro ao salvar item.");
@@ -230,7 +219,8 @@ export default function Estoque({ estoque = [] }) {
   async function excluirItem(item) {
     if (!window.confirm(`Excluir "${item.nome}" do estoque?`)) return;
     try {
-      await deleteDoc(doc(db, "estoque", item.id));
+      await api.estoque.excluir(item.id);
+      await onRefresh();
     } catch (e) {
       alert("Erro ao excluir item.");
     }
@@ -246,34 +236,21 @@ export default function Estoque({ estoque = [] }) {
     if (!qtd || qtd <= 0) { alert("Informe uma quantidade válida."); return; }
     const item = estoque.find((i) => i.id === movForm.estoqueId);
     if (!item) { alert("Item não encontrado."); return; }
-    const anterior = Number(item.quantidade || 0);
-    let nova;
-    if (movForm.tipo === "entrada") nova = anterior + qtd;
-    else if (movForm.tipo === "saida") nova = anterior - qtd;
-    else nova = qtd; // ajuste
-    if (nova < 0) { alert("Quantidade resultante seria negativa. Verifique o valor informado."); return; }
+    if (movForm.tipo === "saida" && Number(item.quantidade || 0) - qtd < 0) {
+      alert("Quantidade resultante seria negativa. Verifique o valor informado.");
+      return;
+    }
     try {
       setSalvando(true);
-      await updateDoc(doc(db, "estoque", movForm.estoqueId), {
-        quantidade: nova,
-        atualizadoEm: serverTimestamp(),
-      });
-      await addDoc(collection(db, "movimentacoesEstoque"), {
-        estoqueId: movForm.estoqueId,
-        nomeItem: item.nome,
-        unidade: item.unidade || "unidade",
-        categoria: item.categoria || "",
-        tipo: movForm.tipo,
-        quantidade: qtd,
-        quantidadeAnterior: anterior,
-        quantidadeNova: nova,
-        motivo: movForm.motivo || "",
-        referenciaId: "",
-        referenciaType: "manual",
-        registradoPor: userData?.nome || firebaseUser?.email || "Usuário",
-        criadoEm: serverTimestamp(),
+      await api.estoque.registrarMovimentacao({
+        estoque_id:     movForm.estoqueId,
+        tipo:           movForm.tipo,
+        quantidade:     qtd,
+        motivo:         movForm.motivo || "",
+        registrado_por: userData?.nome || "Usuário",
       });
       setModalMov(false);
+      await onRefresh();
     } catch (e) {
       console.error(e);
       alert("Erro ao registrar movimentação.");
@@ -687,8 +664,8 @@ export default function Estoque({ estoque = [] }) {
                     ajuste: { cor: "#6366f1", bg: "#eef2ff", icone: "⟳", label: "Ajuste" },
                   }[m.tipo] || { cor: "#64748b", bg: "#f8fafc", icone: "•", label: m.tipo };
 
-                  const ts = m.criadoEm?.toDate ? m.criadoEm.toDate() : null;
-                  const dataFmt = ts
+                  const ts = m.criadoEm ? new Date(m.criadoEm) : null;
+                  const dataFmt = ts && !isNaN(ts)
                     ? ts.toLocaleDateString("pt-BR") + " " + ts.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
                     : "—";
 

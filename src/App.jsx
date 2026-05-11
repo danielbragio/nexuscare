@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   LayoutDashboard,
   Users,
@@ -15,31 +15,9 @@ import {
   BookOpen,
   Settings,
 } from "lucide-react";
-import {
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-} from "firebase/auth";
-import { deleteApp, initializeApp } from "firebase/app";
-import {
-  addDoc,
-  collection,
-  deleteDoc,
-  doc,
-  getDocs,
-  limit,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-  where,
-} from "firebase/firestore";
-import { getAuth } from "firebase/auth";
-
-import { auth, db } from "./services/firebase";
 import { useAuth } from "./context/AuthContext";
 import { hasPermission } from "./config/permissions";
+import api, { tokenStorage } from "./services/api";
 
 import Dashboard from "./pages/Dashboard";
 import Pacientes from "./pages/Pacientes";
@@ -59,86 +37,27 @@ import DashboardMedico from "./pages/DashboardMedico";
 import DashboardFinanceiro from "./pages/DashboardFinanceiro";
 import ModalPerfil from "./components/ModalPerfil";
 
-function FirebaseLoginScreen() {
+function LoginScreen() {
+  const { login } = useAuth();
   const [usuario, setUsuario] = useState("");
   const [senha, setSenha] = useState("");
   const [erro, setErro] = useState("");
   const [carregando, setCarregando] = useState(false);
-
-  async function buscarEmailDoUsuario(valorDigitado) {
-    const termo = valorDigitado.trim();
-    const termoLower = termo.toLowerCase();
-
-    if (termo.includes("@")) return termoLower;
-
-    const buscas = [
-      { campo: "usernameLower", valor: termoLower },
-      { campo: "username", valor: termo },
-      { campo: "usuario", valor: termo },
-      { campo: "login", valor: termo },
-    ];
-
-    for (const item of buscas) {
-      const qUsuario = query(
-        collection(db, "users"),
-        where(item.campo, "==", item.valor),
-        limit(1)
-      );
-
-      const snapshot = await getDocs(qUsuario);
-
-      if (!snapshot.empty) {
-        const dadosUsuario = snapshot.docs[0].data();
-
-        if (dadosUsuario?.ativo === false) {
-          throw new Error("USUARIO_INATIVO");
-        }
-
-        if (dadosUsuario?.email) {
-          return String(dadosUsuario.email).trim().toLowerCase();
-        }
-      }
-    }
-
-    return null;
-  }
 
   async function entrar() {
     if (!usuario.trim() || !senha) {
       setErro("Preencha usuário e senha.");
       return;
     }
-
     try {
       setCarregando(true);
       setErro("");
-
-      const emailEncontrado = await buscarEmailDoUsuario(usuario);
-
-      if (!emailEncontrado) {
-        setErro("Usuário não encontrado.");
-        return;
-      }
-
-      await signInWithEmailAndPassword(auth, emailEncontrado, senha);
+      await login(usuario.trim(), senha);
     } catch (error) {
-      console.error("ERRO REAL DO LOGIN:", error);
-
-      if (error.message === "USUARIO_INATIVO") {
-        setErro("Usuário inativo. Procure o administrador.");
-      } else if (error.code === "auth/invalid-credential") {
-        setErro("Credencial inválida. Confira e-mail/usuário e senha.");
-      } else if (error.code === "auth/wrong-password") {
-        setErro("Senha incorreta.");
-      } else if (error.code === "auth/user-not-found") {
-        setErro("Usuário não encontrado no Firebase Authentication.");
-      } else if (error.code === "auth/invalid-email") {
-        setErro("E-mail inválido.");
-      } else if (error.code === "auth/too-many-requests") {
-        setErro("Muitas tentativas. Aguarde alguns minutos e tente novamente.");
-      } else {
-        setErro(`Não foi possível entrar. ${error.message || ""}`);
-      }
+      if (error.status === 401) setErro("Credenciais inválidas. Verifique usuário e senha.");
+      else if (error.status === 403) setErro("Usuário inativo. Contate o administrador.");
+      else if (error.isNetworkError) setErro("Não foi possível conectar ao servidor.");
+      else setErro(`Não foi possível entrar. ${error.message || ""}`);
     } finally {
       setCarregando(false);
     }
@@ -230,11 +149,12 @@ function FirebaseLoginScreen() {
 
 function EscolherConsultorio({
   consultorios = [],
-  firebaseUser,
   userData,
   onSelecionar,
   onSair,
 }) {
+  const meuId = String(userData?.id || "");
+
   function sessaoAtiva(consultorio) {
     if (!consultorio?.lastActive) return false;
     const ts = consultorio.lastActive?.toDate
@@ -256,7 +176,7 @@ function EscolherConsultorio({
   });
 
   async function escolherSala(sala) {
-    if (sala.ocupado && sala.ocupado.medicoId !== firebaseUser.uid) {
+    if (sala.ocupado && sala.ocupado.medicoId !== meuId) {
       alert(`${sala.nome} já está em uso por ${sala.ocupado.medicoNome}.`);
       return;
     }
@@ -283,13 +203,13 @@ function EscolherConsultorio({
         </div>
 
         <div className="consultorio-user-box">
-          <strong>{userData?.nome || userData?.name || firebaseUser?.email}</strong>
+          <strong>{userData?.nome || userData?.email}</strong>
           <span>Perfil médico</span>
         </div>
 
         <div className="consultorio-grid">
           {salas.map((sala) => {
-            const emUso = sala.ocupado && sala.ocupado.medicoId !== firebaseUser.uid;
+            const emUso = sala.ocupado && sala.ocupado.medicoId !== meuId;
 
             return (
               <button
@@ -318,14 +238,14 @@ function EscolherConsultorio({
 }
 
 export default function App() {
-  const { firebaseUser, userData, loading, logout } = useAuth();
+  const { userData, loading, logout } = useAuth();
+  const meuId = String(userData?.id || "");
   const [view, setView] = useState("");
   const [sidebarMinimizada, setSidebarMinimizada] = useState(false);
   const [consultorioConfirmadoSessao, setConsultorioConfirmadoSessao] = useState(false);
   const [consultaSelecionadaExterna, setConsultaSelecionadaExterna] = useState(null);
   const [pagamentoCheckout, setPagamentoCheckout] = useState(null);
   const [mostrarPerfil, setMostrarPerfil] = useState(false);
-  const [fotoURLPerfil, setFotoURLPerfil] = useState(userData?.photoURL || "");
 
   const [pacientes, setPacientes] = useState([]);
   const [consultas, setConsultas] = useState([]);
@@ -336,6 +256,80 @@ export default function App() {
   const [procedimentosOdonto, setProcedimentosOdonto] = useState([]);
   const [estoque, setEstoque] = useState([]);
   const [dataLoading, setDataLoading] = useState(true);
+
+  // ── Carregamento via API MySQL (módulos migrados) ─────────────────────────────
+  const carregarPacientes = useCallback(async () => {
+    try {
+      const res = await api.pacientes.listar({ per_page: 200 });
+      setPacientes(Array.isArray(res?.data) ? res.data : []);
+    } catch (e) {
+      if (!e.isNetworkError) console.error("Erro pacientes:", e);
+    }
+  }, []);
+
+  const carregarPagamentos = useCallback(async () => {
+    try {
+      const res = await api.pagamentos.listar({ per_page: 200 });
+      setPagamentos(Array.isArray(res?.data) ? res.data : []);
+    } catch (e) {
+      if (!e.isNetworkError) console.error("Erro pagamentos:", e);
+    }
+  }, []);
+
+  const carregarConsultas = useCallback(async () => {
+    try {
+      const role = userData?.role || "";
+      const podeVerTodos =
+        role === "admin" || role === "recepcao" || role === "financeiro" ||
+        role === "estoque" || role === "enfermagem" ||
+        (Array.isArray(userData?.permissions) && userData.permissions.includes("administracao"));
+      const params = { per_page: 200 };
+      if (!podeVerTodos && userData?.id) {
+        params.usuario_id = userData.id;
+      }
+      const res = await api.atendimentos.listar(params);
+      const docs = Array.isArray(res?.data) ? res.data : [];
+      if (!podeVerTodos) docs.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+      setConsultas(docs);
+      setDataLoading(false);
+    } catch (e) {
+      if (!e.isNetworkError) console.error("Erro consultas:", e);
+      setConsultas([]);
+      setDataLoading(false);
+    }
+  }, [userData?.id, userData?.role, userData?.permissions]);
+
+  const carregarAtendimentosOdonto = useCallback(async () => {
+    try {
+      const res = await api.atendimentosOdonto.listar({ per_page: 200 });
+      setAtendimentosOdonto(Array.isArray(res?.data) ? res.data : []);
+    } catch (e) {
+      if (!e.isNetworkError) console.error("Erro atendimentosOdonto:", e);
+    }
+  }, []);
+
+  const carregarProcedimentosOdonto = useCallback(async () => {
+    try {
+      const res = await api.procedimentosOdonto.listar();
+      setProcedimentosOdonto(Array.isArray(res?.data) ? res.data : []);
+    } catch (e) {
+      if (!e.isNetworkError) console.error("Erro procedimentosOdonto:", e);
+    }
+  }, []);
+
+  const carregarUsuarios = useCallback(async () => {
+    try {
+      const res = await api.usuarios.listar({ per_page: 500 });
+      setUsers(Array.isArray(res?.data) ? res.data : []);
+    } catch (e) {
+      if (!e.isNetworkError) console.error("Erro usuários:", e);
+    }
+  }, []);
+
+  const carregarEstoque = useCallback(async () => {
+    try { const r = await api.estoque.listar(); setEstoque(r.data || []); } catch { setEstoque([]); }
+  }, []);
+
 
   // ── Busca global ─────────────────────────────────────────────────────────────
   const [buscaGlobal, setBuscaGlobal] = useState("");
@@ -429,37 +423,30 @@ export default function App() {
     hasPermission(userData, "medicos");
 
   const consultorioAtual = useMemo(() => {
-    if (!firebaseUser) return null;
-    return consultorios.find((item) => item.medicoId === firebaseUser.uid) || null;
-  }, [consultorios, firebaseUser]);
+    if (!userData) return null;
+    return consultorios.find((item) => item.medicoId === meuId) || null;
+  }, [consultorios, meuId, userData]);
 
-  useEffect(() => {
-    setFotoURLPerfil(userData?.photoURL || "");
-  }, [userData?.photoURL]);
 
   useEffect(() => {
     setConsultorioConfirmadoSessao(false);
     setConsultaSelecionadaExterna(null);
-  }, [firebaseUser?.uid]);
+  }, [userData?.id]);
 
   useEffect(() => {
-    if (!consultorioConfirmadoSessao || !firebaseUser) return;
+    if (!consultorioConfirmadoSessao || !meuId) return;
     const interval = setInterval(async () => {
-      try {
-        await updateDoc(doc(db, "consultorios", firebaseUser.uid), {
-          lastActive: serverTimestamp(),
-        });
-      } catch (_) {}
+      try { await api.consultorios.ocupar({ status: 'ocupado' }); } catch (_) {}
     }, 10000);
     return () => clearInterval(interval);
-  }, [consultorioConfirmadoSessao, firebaseUser]);
+  }, [consultorioConfirmadoSessao, meuId]);
 
   useEffect(() => {
-    if (!consultorioConfirmadoSessao || !firebaseUser) return;
+    if (!consultorioConfirmadoSessao || !meuId) return;
     const handleUnload = () => {
-      try {
-        deleteDoc(doc(db, "consultorios", firebaseUser.uid));
-      } catch (_) {}
+      navigator.sendBeacon
+        ? navigator.sendBeacon(`/nexuscare-api/api/consultorios/${meuId}`, '')
+        : fetch(`/nexuscare-api/api/consultorios/${meuId}`, { method: 'DELETE', keepalive: true }).catch(() => {});
     };
     window.addEventListener("beforeunload", handleUnload);
     window.addEventListener("pagehide", handleUnload);
@@ -467,10 +454,10 @@ export default function App() {
       window.removeEventListener("beforeunload", handleUnload);
       window.removeEventListener("pagehide", handleUnload);
     };
-  }, [consultorioConfirmadoSessao, firebaseUser]);
+  }, [consultorioConfirmadoSessao, meuId]);
 
   useEffect(() => {
-    if (!firebaseUser) {
+    if (!userData) {
       setPacientes([]);
       setConsultas([]);
       setPagamentos([]);
@@ -485,221 +472,119 @@ export default function App() {
 
     setDataLoading(true);
 
-    const uid = firebaseUser.uid;
-    const role = userData?.role || "";
-    const podeVerTodos =
-      role === "admin" ||
-      role === "recepcao" ||
-      role === "financeiro" ||
-      role === "estoque" ||
-      role === "enfermagem" ||
-      (Array.isArray(userData?.permissions) && userData.permissions.includes("administracao"));
+    // ── Módulos migrados para MySQL: polling ───────────────────────────────
+    carregarPacientes();
+    carregarPagamentos();
+    carregarConsultas();
+    carregarAtendimentosOdonto();
+    carregarProcedimentosOdonto();
+    carregarUsuarios();
+    const timerPacientes          = setInterval(carregarPacientes,          30000);
+    const timerPagamentos         = setInterval(carregarPagamentos,         15000);
+    const timerConsultas          = setInterval(carregarConsultas,          30000);
+    const timerAtendimentosOdonto = setInterval(carregarAtendimentosOdonto, 30000);
+    const timerUsuarios           = setInterval(carregarUsuarios,           60000);
 
-    const qPacientes = query(collection(db, "patients"), orderBy("createdAt", "desc"));
+    const carregarConsultorios = async () => {
+      try { const r = await api.consultorios.listar(); setConsultorios(r.data || []); } catch { }
+    };
 
-    const qConsultas = podeVerTodos
-      ? query(collection(db, "appointments"), orderBy("createdAt", "desc"))
-      : query(collection(db, "appointments"), where("profissionalId", "==", uid));
-
-    const qPagamentos = query(collection(db, "pagamentos"), orderBy("createdAt", "desc"));
-    const qConsultorios = query(collection(db, "consultorios"), orderBy("numero", "asc"));
-    const qUsers = query(collection(db, "users"), orderBy("nome", "asc"));
-
-    const qAtendimentosOdonto = podeVerTodos
-      ? query(collection(db, "atendimentosOdonto"), orderBy("createdAt", "desc"))
-      : query(collection(db, "atendimentosOdonto"), where("profissionalId", "==", uid));
-
-    const unsubPacientes = onSnapshot(qPacientes, (snapshot) => {
-      setPacientes(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
-    });
-
-    const unsubConsultas = onSnapshot(qConsultas, (snapshot) => {
-      const docs = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
-      if (!podeVerTodos) docs.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-      setConsultas(docs);
-      setDataLoading(false);
-    }, (err) => { console.error("appointments:", err); setConsultas([]); setDataLoading(false); });
-
-    const unsubPagamentos = onSnapshot(
-      qPagamentos,
-      (snapshot) => {
-        setPagamentos(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
-      },
-      (error) => {
-        console.error("Erro ao carregar pagamentos:", error);
-        setPagamentos([]);
-      }
-    );
-
-    const unsubConsultorios = onSnapshot(qConsultorios, (snapshot) => {
-      setConsultorios(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
-    });
-
-    const unsubUsers = onSnapshot(qUsers, (snapshot) => {
-      setUsers(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
-    });
-
-    const unsubAtendimentosOdonto = onSnapshot(
-      qAtendimentosOdonto,
-      (snap) => {
-        const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        if (!podeVerTodos) docs.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-        setAtendimentosOdonto(docs);
-      },
-      (err) => { console.error("atendimentosOdonto:", err); setAtendimentosOdonto([]); }
-    );
-
-    const unsubProcedimentosOdonto = onSnapshot(
-      query(collection(db, "procedimentosOdonto"), orderBy("nome", "asc")),
-      (snap) => setProcedimentosOdonto(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
-      (err) => { console.error("procedimentosOdonto:", err); setProcedimentosOdonto([]); }
-    );
-
-    const unsubEstoque = onSnapshot(
-      query(collection(db, "estoque"), orderBy("nome", "asc")),
-      (snap) => setEstoque(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
-      (err) => { console.error("estoque:", err); setEstoque([]); }
-    );
+    carregarConsultorios();
+    carregarEstoque();
+    const timerConsultorios = setInterval(carregarConsultorios, 10000);
+    const timerEstoque      = setInterval(carregarEstoque,      15000);
 
     return () => {
-      unsubPacientes();
-      unsubConsultas();
-      unsubPagamentos();
-      unsubConsultorios();
-      unsubUsers();
-      unsubAtendimentosOdonto();
-      unsubProcedimentosOdonto();
-      unsubEstoque();
+      clearInterval(timerPacientes);
+      clearInterval(timerPagamentos);
+      clearInterval(timerConsultas);
+      clearInterval(timerAtendimentosOdonto);
+      clearInterval(timerUsuarios);
+      clearInterval(timerConsultorios);
+      clearInterval(timerEstoque);
     };
-  }, [firebaseUser, userData?.role, userData?.permissions]);
+  }, [userData?.id, userData?.role, userData?.permissions, carregarPacientes, carregarPagamentos, carregarConsultas, carregarAtendimentosOdonto, carregarProcedimentosOdonto, carregarUsuarios, carregarEstoque]);
 
   async function criarUsuario(novoUsuario) {
-    const username = novoUsuario.username.trim();
-    const usernameLower = username.toLowerCase();
-    const email = novoUsuario.email.trim().toLowerCase();
-
-    const usuarioDuplicado = await getDocs(
-      query(collection(db, "users"), where("usernameLower", "==", usernameLower), limit(1))
-    );
-
-    if (!usuarioDuplicado.empty) {
-      throw new Error("USERNAME_DUPLICADO");
-    }
-
-    const emailDuplicado = await getDocs(
-      query(collection(db, "users"), where("email", "==", email), limit(1))
-    );
-
-    if (!emailDuplicado.empty) {
-      throw new Error("EMAIL_DUPLICADO");
-    }
-
-    const secondaryAppName = `SecondaryUserCreation-${Date.now()}`;
-    const secondaryApp = initializeApp(auth.app.options, secondaryAppName);
-    const secondaryAuth = getAuth(secondaryApp);
-
-    try {
-      const credential = await createUserWithEmailAndPassword(
-        secondaryAuth,
-        email,
-        novoUsuario.senha
-      );
-
-      await setDoc(doc(db, "users", credential.user.uid), {
-        nome: novoUsuario.nome,
-        email,
-        username,
-        usernameLower,
-        usuario: username,
-        login: username,
-        role: novoUsuario.role,
-        ativo: novoUsuario.ativo,
-        permissions: novoUsuario.permissions,
-        crm: novoUsuario.crm || "",
-        coren: novoUsuario.coren || "",
-        especialidade: novoUsuario.especialidade || "",
-        diasAtendimento: novoUsuario.diasAtendimento || [],
-        horarios: novoUsuario.horarios || [],
-        horaInicio: novoUsuario.horaInicio || "",
-        horaFim: novoUsuario.horaFim || "",
-        intervalo: novoUsuario.intervalo || 30,
-        pausaInicio: novoUsuario.pausaInicio || "",
-        pausaFim: novoUsuario.pausaFim || "",
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-
-      await secondaryAuth.signOut();
-    } finally {
-      await deleteApp(secondaryApp);
-    }
+    await api.usuarios.criar({
+      login:            (novoUsuario.username || novoUsuario.login || "").trim(),
+      nome:             novoUsuario.nome,
+      email:            novoUsuario.email.trim().toLowerCase(),
+      senha:            novoUsuario.senha,
+      role:             novoUsuario.role || "recepcao",
+      ativo:            novoUsuario.ativo !== false ? 1 : 0,
+      permissions:      novoUsuario.permissions || [],
+      crm:              novoUsuario.crm || null,
+      coren:            novoUsuario.coren || null,
+      cargo:            novoUsuario.cargo || null,
+      especialidade:    novoUsuario.especialidade || null,
+      especialidades:   novoUsuario.especialidades || [],
+      atende_pacientes: (novoUsuario.atendePacientes || novoUsuario.atende_pacientes) ? 1 : 0,
+      dias_atendimento: novoUsuario.diasAtendimento || [],
+      horarios:         novoUsuario.horarios || [],
+      hora_inicio:      novoUsuario.horaInicio || null,
+      hora_fim:         novoUsuario.horaFim || null,
+      intervalo:        novoUsuario.intervalo || 30,
+      pausa_inicio:     novoUsuario.pausaInicio || null,
+      pausa_fim:        novoUsuario.pausaFim || null,
+    });
+    await carregarUsuarios();
   }
 
   async function atualizarUsuario(id, dados) {
-    const payload = {
-      ...dados,
-      updatedAt: serverTimestamp(),
-    };
-
-    if (payload.username) {
-      payload.username = payload.username.trim();
-      payload.usernameLower = payload.username.toLowerCase();
-      payload.usuario = payload.username;
-      payload.login = payload.username;
-    }
-
-    if (payload.email) {
-      payload.email = payload.email.trim().toLowerCase();
-    }
-
-    await updateDoc(doc(db, "users", id), payload);
+    await api.usuarios.atualizar(id, {
+      login:            (dados.username || dados.login || dados.usuario || "").trim() || undefined,
+      nome:             dados.nome || dados.name,
+      email:            dados.email ? dados.email.trim().toLowerCase() : undefined,
+      role:             dados.role,
+      ativo:            dados.ativo !== false ? 1 : 0,
+      permissions:      dados.permissions,
+      crm:              dados.crm,
+      coren:            dados.coren,
+      cargo:            dados.cargo,
+      especialidade:    dados.especialidade,
+      especialidades:   dados.especialidades,
+      atende_pacientes: (dados.atendePacientes || dados.atende_pacientes) ? 1 : 0,
+      dias_atendimento: dados.diasAtendimento,
+      horarios:         dados.horarios,
+      hora_inicio:      dados.horaInicio,
+      hora_fim:         dados.horaFim,
+      intervalo:        dados.intervalo,
+      pausa_inicio:     dados.pausaInicio,
+      pausa_fim:        dados.pausaFim,
+    });
+    await carregarUsuarios();
   }
 
   async function excluirUsuario(usuario) {
-    if (!usuario?.id) {
-      throw new Error("Usuário inválido para exclusão.");
-    }
-
-    await deleteDoc(doc(db, "users", usuario.id));
+    if (!usuario?.id) throw new Error("Usuário inválido para exclusão.");
+    await api.usuarios.excluir(usuario.id);
+    await carregarUsuarios();
   }
 
   async function selecionarConsultorio(numero) {
-    if (!firebaseUser) return;
-
-    const medicoNome =
-      userData?.nome || userData?.name || firebaseUser?.displayName || firebaseUser?.email;
-
-    await setDoc(doc(db, "consultorios", firebaseUser.uid), {
+    if (!meuId) return;
+    await api.consultorios.ocupar({
       numero,
-      nome: `Consultório ${numero}`,
-      medicoId: firebaseUser.uid,
-      medicoNome,
-      medicoEmail: firebaseUser.email || "",
-      crm: userData?.crm || "",
-      status: "ocupado",
-      lastActive: serverTimestamp(),
-      atualizadoEm: serverTimestamp(),
+      medico_nome:  userData?.nome  || userData?.email || "",
+      medico_email: userData?.email || "",
+      crm:          userData?.crm   || "",
+      status:       "ocupado",
     });
-
     setConsultorioConfirmadoSessao(true);
     setView("medicos");
   }
 
   async function liberarConsultorio() {
-    if (!firebaseUser) return;
-
-    try {
-      await deleteDoc(doc(db, "consultorios", firebaseUser.uid));
-    } catch (error) {
-      console.error("Erro ao liberar consultório:", error);
+    if (!meuId) return;
+    try { await api.consultorios.liberar(meuId); } catch (e) {
+      console.error("Erro ao liberar consultório:", e);
     }
   }
 
   async function liberarConsultorioDeUsuario(usuarioId) {
-    try {
-      await deleteDoc(doc(db, "consultorios", usuarioId));
-    } catch (error) {
-      console.error("Erro ao liberar consultório do usuário:", error);
+    try { await api.consultorios.liberar(String(usuarioId)); } catch (e) {
+      console.error("Erro ao liberar consultório do usuário:", e);
     }
   }
 
@@ -709,48 +594,60 @@ export default function App() {
   }
 
   async function adicionarPaciente(novoPaciente) {
-    await addDoc(collection(db, "patients"), {
-      ...novoPaciente,
-      createdAt: serverTimestamp(),
+    await api.pacientes.criar({
+      nome:                novoPaciente.nome,
+      cpf:                 novoPaciente.cpf || null,
+      telefone:            novoPaciente.telefone || null,
+      data_nascimento:     novoPaciente.dataNascimento || null,
+      sexo:                novoPaciente.sexo || null,
+      email:               novoPaciente.email || null,
+      endereco:            novoPaciente.rua || novoPaciente.endereco || null,
+      cep:                 novoPaciente.cep || null,
+      plano_saude:         novoPaciente.convenio || null,
+      observacoes:         novoPaciente.observacoes || null,
+      alergias:            novoPaciente.alergias || null,
+      tipo_sanguineo:      novoPaciente.tipoSanguineo || null,
+      telefone_emergencia: novoPaciente.telefoneEmergencia || null,
     });
+    await carregarPacientes();
   }
 
   async function adicionarConsulta(novaConsulta) {
-    const docRef = await addDoc(collection(db, "appointments"), {
-      ...novaConsulta,
-      status: "agendado",
-      prontuario: null,
-      createdAt: serverTimestamp(),
+    const res = await api.atendimentos.criar({
+      nome_paciente:              novaConsulta.paciente || novaConsulta.nomePaciente || "",
+      usuario_id:                 null,
+      nome_medico:                novaConsulta.medico || novaConsulta.profissional || "",
+      profissional_firebase_id:   novaConsulta.profissionalId || novaConsulta.medicoId || "",
+      data:                       novaConsulta.data || new Date().toISOString().slice(0, 10),
+      hora:                       novaConsulta.hora || "",
+      tipo_atendimento:           novaConsulta.tipoAtendimento || "",
+      especialidade:               novaConsulta.especialidade || "",
+      observacoes:                novaConsulta.observacoesRecepcao || "",
+      status:                     "agendado",
     });
-    return docRef;
+    await carregarConsultas();
+    return res?.data;
   }
 
   async function iniciarAtendimento(id) {
-    await updateDoc(doc(db, "appointments", id), {
-      status: "em_atendimento",
-    });
+    await api.atendimentos.atualizar(id, { status: "em_atendimento" });
+    await carregarConsultas();
   }
 
   async function salvarProntuario(id, prontuario) {
-    await updateDoc(doc(db, "appointments", id), {
-      prontuario,
-    });
+    await api.atendimentos.atualizar(id, { prontuario });
   }
 
   async function finalizarAtendimento(id, prontuarioFinal) {
-    const prontuarioComProfissional = {
+    const prontuario = {
       ...prontuarioFinal,
-      medicoNome: userData?.nome || userData?.name || firebaseUser?.email || "",
+      medicoNome: userData?.nome || userData?.email || "",
       crm: userData?.crm || "",
       coren: userData?.coren || "",
       profissionalRole: userData?.role || "",
     };
-
-    await updateDoc(doc(db, "appointments", id), {
-      status: "finalizado",
-      prontuario: prontuarioComProfissional,
-      finalizadoEm: serverTimestamp(),
-    });
+    await api.atendimentos.atualizar(id, { status: "finalizado", prontuario });
+    await carregarConsultas();
   }
 
   const indicadores = useMemo(() => {
@@ -911,7 +808,7 @@ export default function App() {
         );
 
       case "estoque":
-        return <Estoque estoque={estoque} />;
+        return <Estoque estoque={estoque} onRefresh={carregarEstoque} />;
 
       case "relatorios":
         return (
@@ -1061,7 +958,7 @@ export default function App() {
 
   async function sairSistema() {
     try {
-      if (isMedico) {
+      if (userData?.atende_pacientes) {
         await liberarConsultorio();
       }
 
@@ -1078,19 +975,18 @@ export default function App() {
     return <div style={{ padding: "40px", textAlign: "center" }}>Carregando sistema...</div>;
   }
 
-  if (!firebaseUser) {
-    return <FirebaseLoginScreen />;
+  if (!userData) {
+    return <LoginScreen />;
   }
 
   if (dataLoading) {
     return <div style={{ padding: "40px", textAlign: "center" }}>Carregando dados...</div>;
   }
 
-  if (isMedico && !consultorioConfirmadoSessao) {
+  if (userData?.atende_pacientes && !consultorioConfirmadoSessao) {
     return (
       <EscolherConsultorio
         consultorios={consultorios}
-        firebaseUser={firebaseUser}
         userData={userData}
         onSelecionar={selecionarConsultorio}
         onSair={sairSistema}
@@ -1171,19 +1067,19 @@ export default function App() {
           title="Meu Perfil"
         >
           <div className="sidebar-user-avatar" style={{ overflow: "hidden", padding: 0 }}>
-            {fotoURLPerfil ? (
+            {userData?.photoURL ? (
               <img
-                src={fotoURLPerfil}
+                src={userData.photoURL}
                 alt="Foto"
                 style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }}
               />
             ) : (
-              (userData?.nome || userData?.name || firebaseUser?.email || "U").charAt(0).toUpperCase()
+              (userData?.nome || userData?.email || "U").charAt(0).toUpperCase()
             )}
           </div>
           <div className="sidebar-user-info">
             <span className="sidebar-user-name">
-              {userData?.nome || userData?.name || firebaseUser?.email}
+              {userData?.nome || userData?.email}
             </span>
             <span className="sidebar-user-role">
               {userData?.role || "Usuário"}
@@ -1324,10 +1220,8 @@ export default function App() {
 
       {mostrarPerfil && (
         <ModalPerfil
-          firebaseUser={firebaseUser}
           userData={userData}
           onClose={() => setMostrarPerfil(false)}
-          onPhotoUpdate={(url) => setFotoURLPerfil(url)}
         />
       )}
     </div>

@@ -101,7 +101,7 @@ function Campo({ label, children, span }) {
 // ── COMPONENTE PRINCIPAL ─────────────────────────────────────────────────────────
 
 export default function Prontuario({ consultas = [], atendimentosOdonto = [], pacientes = [], pagamentos = [] }) {
-  const { userData, firebaseUser } = useAuth();
+  const { userData } = useAuth();
   const isAdmin = userData?.role === "admin" || (Array.isArray(userData?.permissions) && userData.permissions.includes("administracao"));
   const isMedico = userData?.role === "medico" || userData?.role === "médico";
 
@@ -119,13 +119,15 @@ export default function Prontuario({ consultas = [], atendimentosOdonto = [], pa
       .filter((c) => normStatus(c.status) === "finalizado" && c.prontuario)
       .sort((a, b) => (b.data || "").localeCompare(a.data || ""));
     if (isAdmin) return base;
-    if (isMedico && firebaseUser?.uid) {
-      const uid = firebaseUser.uid;
+    if (isMedico && userData?.id) {
+      const meuId = String(userData.id);
       const nome = (userData?.nome || userData?.name || "").toLowerCase().trim();
-      return base.filter((c) => c.medicoId === uid || (c.medico || "").toLowerCase().trim() === nome);
+      return base.filter((c) =>
+        String(c.usuarioId) === meuId || (c.medico || "").toLowerCase().trim() === nome
+      );
     }
     return base;
-  }, [consultas, isAdmin, isMedico, firebaseUser, userData]);
+  }, [consultas, isAdmin, isMedico, userData]);
 
   const profissionais = useMemo(() =>
     [...new Set(prontuarios.map((c) => c.medico).filter(Boolean))].sort(),

@@ -1,24 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  addDoc,
-  collection,
-  deleteDoc,
-  doc,
-  getDocs,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  updateDoc,
-  where,
-} from "firebase/firestore";
-import {
-  deleteObject,
-  getDownloadURL,
-  ref,
-  uploadBytes,
-} from "firebase/storage";
-import { db, storage } from "../services/firebase";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import api, { uploadAnexo } from "../services/api";
+import { useAuth } from "../context/AuthContext";
 
 const METRICA_COR = { receita: "#10b981", despesa: "#ef4444", saldo: "#6366f1" };
 
@@ -130,6 +112,7 @@ function LineChart({ dados, metrica, cor, formatMoeda }) {
 }
 
 export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrParaPagamentos }) {
+  const { userData } = useAuth();
   const [abaAtiva, setAbaAtiva] = useState("resumo");
   const [contasPagar, setContasPagar] = useState([]);
   const [anexosFinanceiros, setAnexosFinanceiros] = useState([]);
@@ -214,58 +197,49 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
     observacao: "",
   });
 
+  // ── Polling MySQL: contas a pagar e fornecedores ─────────────────────────
   useEffect(() => {
-    const q = query(collection(db, "contasPagar"), orderBy("criadoEm", "desc"));
+    async function carregarContasPagar() {
+      try {
+        const res = await api.contasPagar.listar();
+        setContasPagar(res.data || []);
+      } catch { setContasPagar([]); }
+    }
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const lista = snapshot.docs.map((documento) => ({
-        id: documento.id,
-        ...documento.data(),
-      }));
+    async function carregarFornecedores() {
+      try {
+        const res = await api.fornecedores.listar();
+        setFornecedores(res.data || []);
+      } catch { setFornecedores([]); }
+    }
 
-      setContasPagar(lista);
-    });
+    carregarContasPagar();
+    carregarFornecedores();
 
-    return () => unsubscribe();
+    const timer = setInterval(carregarContasPagar, 30000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const carregarAnexos = useCallback(async (contaId = null) => {
+    try {
+      const params = contaId ? { conta_id: contaId } : {};
+      const res = await api.anexosFinanceiros.listar(params);
+      setAnexosFinanceiros(res.data || []);
+    } catch { setAnexosFinanceiros([]); }
+  }, []);
+
+  const carregarHistorico = useCallback(async (contaId = null) => {
+    try {
+      const params = contaId ? { conta_id: contaId } : {};
+      const res = await api.historicoFinanceiro.listar(params);
+      setHistoricoFinanceiro(res.data || []);
+    } catch { setHistoricoFinanceiro([]); }
   }, []);
 
   useEffect(() => {
-    const q = query(collection(db, "anexosFinanceiros"), orderBy("criadoEm", "desc"));
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const lista = snapshot.docs.map((documento) => ({
-        id: documento.id,
-        ...documento.data(),
-      }));
-
-      setAnexosFinanceiros(lista);
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    const q = query(collection(db, "historicoFinanceiro"), orderBy("criadoEm", "desc"));
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const lista = snapshot.docs.map((documento) => ({
-        id: documento.id,
-        ...documento.data(),
-      }));
-
-      setHistoricoFinanceiro(lista);
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    const q = query(collection(db, "fornecedores"), orderBy("nome", "asc"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setFornecedores(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
-    }, (err) => { console.error("fornecedores:", err); });
-    return () => unsubscribe();
-  }, []);
+    carregarAnexos();
+    carregarHistorico();
+  }, [carregarAnexos, carregarHistorico]);
 
   function formatarMoeda(valor) {
     return Number(valor || 0).toLocaleString("pt-BR", {
@@ -358,21 +332,19 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
     });
   }
 
-  async function registrarHistorico({
-    contaId,
-    alteracao,
-    statusAnterior = "",
-    novoStatus = "",
-  }) {
-    await addDoc(collection(db, "historicoFinanceiro"), {
-      contaId,
-      criadoPor: novaConta.usuarioInclusao || "Usuário do sistema",
-      editadoPor: novaConta.usuarioInclusao || "Usuário do sistema",
-      alteracao,
-      statusAnterior,
-      novoStatus,
-      criadoEm: serverTimestamp(),
-    });
+  async function registrarHistorico({ contaId, alteracao, statusAnterior = "", novoStatus = "" }) {
+    const autor = novaConta.usuarioInclusao || userData?.nome || "Usuário do sistema";
+    try {
+      await api.historicoFinanceiro.criar({
+        conta_id:        contaId,
+        alteracao,
+        status_anterior: statusAnterior,
+        novo_status:     novoStatus,
+        criado_por:      autor,
+        editado_por:     autor,
+      });
+      await carregarHistorico();
+    } catch { /* histórico não bloqueia a operação principal */ }
   }
 
   async function salvarContaPagar() {
@@ -390,46 +362,45 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
       setSalvandoConta(true);
 
       const payload = {
-        ...novaConta,
-        valorBruto: numero(novaConta.valorBruto),
-        valorImpostosRetidos: numero(novaConta.valorImpostosRetidos),
-        valorLiquidoPagar: numero(novaConta.valorLiquidoPagar),
-        valorDesconto: numero(novaConta.valorDesconto),
-        valorJuros: numero(novaConta.valorJuros),
-        valorMulta: numero(novaConta.valorMulta),
-        valorPago: numero(novaConta.valorPago),
-        valorPendente: numero(novaConta.valorPendente),
-        atualizadoEm: serverTimestamp(),
+        fornecedor:              novaConta.fornecedor,
+        cnpj_fornecedor:         novaConta.cnpjFornecedor,
+        data_emissao:            novaConta.dataEmissao || null,
+        numero_nota_fiscal:      novaConta.numeroNotaFiscal,
+        tipo_documento:          novaConta.tipoDocumento,
+        mes_competencia:         novaConta.mesCompetencia,
+        ano_competencia:         novaConta.anoCompetencia,
+        data_vencimento:         novaConta.dataVencimento || null,
+        previsao_pagamento:      novaConta.previsaoPagamento || null,
+        data_pagamento:          novaConta.dataPagamento || null,
+        tipo_pagamento:          novaConta.tipoPagamento,
+        codigo_barras_boleto:    novaConta.codigoBarrasBoleto,
+        valor_bruto:             numero(novaConta.valorBruto),
+        valor_impostos_retidos:  numero(novaConta.valorImpostosRetidos),
+        valor_liquido_pagar:     numero(novaConta.valorLiquidoPagar),
+        valor_desconto:          numero(novaConta.valorDesconto),
+        valor_juros:             numero(novaConta.valorJuros),
+        valor_multa:             numero(novaConta.valorMulta),
+        valor_pago:              numero(novaConta.valorPago),
+        valor_pendente:          numero(novaConta.valorPendente),
+        status:                  novaConta.status,
+        categoria:               novaConta.categoria,
+        observacoes:             novaConta.observacoes,
+        usuario_inclusao:        novaConta.usuarioInclusao,
       };
 
       if (modoEdicao && contaSelecionada?.id) {
         const statusAnterior = contaSelecionada.status || "";
-        await updateDoc(doc(db, "contasPagar", contaSelecionada.id), payload);
-
-        await registrarHistorico({
-          contaId: contaSelecionada.id,
-          alteracao: "Conta a pagar editada",
-          statusAnterior,
-          novoStatus: novaConta.status,
-        });
-
+        await api.contasPagar.atualizar(contaSelecionada.id, payload);
+        await registrarHistorico({ contaId: contaSelecionada.id, alteracao: "Conta a pagar editada", statusAnterior, novoStatus: novaConta.status });
         alert("Conta atualizada com sucesso.");
       } else {
-        const docRef = await addDoc(collection(db, "contasPagar"), {
-          ...payload,
-          criadoEm: serverTimestamp(),
-        });
-
-        await registrarHistorico({
-          contaId: docRef.id,
-          alteracao: "Conta a pagar criada",
-          statusAnterior: "",
-          novoStatus: novaConta.status,
-        });
-
+        const res = await api.contasPagar.criar(payload);
+        await registrarHistorico({ contaId: res.data.id, alteracao: "Conta a pagar criada", statusAnterior: "", novoStatus: novaConta.status });
         alert("Conta cadastrada com sucesso.");
       }
 
+      const resCp = await api.contasPagar.listar();
+      setContasPagar(resCp.data || []);
       limparConta();
     } catch (error) {
       console.error("Erro ao salvar conta a pagar:", error);
@@ -479,17 +450,11 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
     if (!confirmar) return;
 
     try {
-      await deleteDoc(doc(db, "contasPagar", conta.id));
-
-      await registrarHistorico({
-        contaId: conta.id,
-        alteracao: "Conta a pagar excluída",
-        statusAnterior: conta.status || "",
-        novoStatus: "Excluída",
-      });
-
+      await api.contasPagar.excluir(conta.id);
+      await registrarHistorico({ contaId: conta.id, alteracao: "Conta a pagar excluída", statusAnterior: conta.status || "", novoStatus: "Excluída" });
       if (contaSelecionada?.id === conta.id) limparConta();
-
+      const res = await api.contasPagar.listar();
+      setContasPagar(res.data || []);
       alert("Conta excluída com sucesso.");
     } catch (error) {
       console.error("Erro ao excluir conta:", error);
@@ -499,21 +464,15 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
 
   async function marcarContaComoPaga(conta) {
     try {
-      await updateDoc(doc(db, "contasPagar", conta.id), {
-        status: "Pago",
-        dataPagamento: dataAtualFormatada(),
-        valorPago: Number(conta.valorLiquidoPagar || conta.valorBruto || 0),
-        valorPendente: 0,
-        atualizadoEm: serverTimestamp(),
+      await api.contasPagar.atualizar(conta.id, {
+        status:        "Pago",
+        data_pagamento: dataAtualFormatada(),
+        valor_pago:    Number(conta.valorLiquidoPagar || conta.valorBruto || 0),
+        valor_pendente: 0,
       });
-
-      await registrarHistorico({
-        contaId: conta.id,
-        alteracao: "Conta marcada como paga",
-        statusAnterior: conta.status || "",
-        novoStatus: "Pago",
-      });
-
+      await registrarHistorico({ contaId: conta.id, alteracao: "Conta marcada como paga", statusAnterior: conta.status || "", novoStatus: "Pago" });
+      const res = await api.contasPagar.listar();
+      setContasPagar(res.data || []);
       alert("Conta marcada como paga.");
     } catch (error) {
       console.error("Erro ao marcar conta como paga:", error);
@@ -521,49 +480,13 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
     }
   }
 
-  async function sincMovFinanceiro(pagamentoId, statusNorm) {
-    const pag = pagamentos.find((p) => p.id === pagamentoId);
-    if (!pag) return;
-    try {
-      const snap = await getDocs(
-        query(
-          collection(db, "movimentacoes"),
-          where("referenciaId", "==", pagamentoId),
-          where("origem", "==", "pagamentos")
-        )
-      );
-      const dados = {
-        referenciaId: pagamentoId,
-        origem: "pagamentos",
-        tipo: "Receita",
-        categoria: "Receita",
-        descricao: pag.tipoAtendimento || pag.descricao || "",
-        valor: Number(pag.valor || 0),
-        data: pag.dataPagamento || dataAtualFormatada(),
-        nomePaciente: pag.paciente || pag.nomePaciente || "",
-        formaPagamento: pag.formaPagamento || "",
-        status: statusNorm,
-        atualizadoEm: serverTimestamp(),
-      };
-      if (!snap.empty) {
-        await updateDoc(doc(db, "movimentacoes", snap.docs[0].id), dados);
-      } else {
-        await addDoc(collection(db, "movimentacoes"), { ...dados, criadoEm: serverTimestamp() });
-      }
-    } catch (e) {
-      console.error("Erro ao sincronizar movimentação:", e);
-    }
-  }
-
   async function marcarComoPago(pagamentoId) {
     try {
-      await updateDoc(doc(db, "pagamentos", pagamentoId), {
-        statusPagamento: "Pago",
-        status: "pago",
-        dataPagamento: dataAtualFormatada(),
-        atualizadoEm: serverTimestamp(),
+      await api.pagamentos.atualizar(pagamentoId, {
+        status_pagamento: "Pago",
+        status:           "pago",
+        data_pagamento:   dataAtualFormatada(),
       });
-      await sincMovFinanceiro(pagamentoId, "pago");
       alert("Pagamento marcado como pago.");
     } catch (error) {
       console.error("Erro ao marcar como pago:", error);
@@ -572,29 +495,12 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
   }
 
   async function cancelarPagamento(pagamentoId) {
-    const confirmar = window.confirm("Deseja cancelar este pagamento?");
-
-    if (!confirmar) return;
-
+    if (!window.confirm("Deseja cancelar este pagamento?")) return;
     try {
-      await updateDoc(doc(db, "pagamentos", pagamentoId), {
-        statusPagamento: "Cancelado",
-        status: "cancelado",
-        atualizadoEm: serverTimestamp(),
+      await api.pagamentos.atualizar(pagamentoId, {
+        status_pagamento: "Cancelado",
+        status:           "cancelado",
       });
-      const snap = await getDocs(
-        query(
-          collection(db, "movimentacoes"),
-          where("referenciaId", "==", pagamentoId),
-          where("origem", "==", "pagamentos")
-        )
-      );
-      if (!snap.empty) {
-        await updateDoc(doc(db, "movimentacoes", snap.docs[0].id), {
-          status: "cancelado",
-          atualizadoEm: serverTimestamp(),
-        });
-      }
       alert("Pagamento cancelado.");
     } catch (error) {
       console.error("Erro ao cancelar pagamento:", error);
@@ -627,17 +533,17 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
     };
 
     try {
-      await updateDoc(doc(db, "contasPagar", contaSelecionada.id), {
+      await api.contasPagar.atualizar(contaSelecionada.id, {
         impostos: [...impostosAtuais, imposto],
-        atualizadoEm: serverTimestamp(),
       });
-
       await registrarHistorico({
         contaId: contaSelecionada.id,
         alteracao: `Imposto ${novoImposto.tipoImposto} adicionado`,
         statusAnterior: contaSelecionada.status || "",
         novoStatus: contaSelecionada.status || "",
       });
+      const res = await api.contasPagar.listar();
+      setContasPagar(res.data || []);
 
       setNovoImposto({
         tipoImposto: "",
@@ -659,7 +565,6 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
       alert("Selecione ou salve uma conta antes de adicionar anexos.");
       return;
     }
-
     if (!novoAnexo.arquivo) {
       alert("Selecione um arquivo para anexar.");
       return;
@@ -668,37 +573,24 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
     try {
       setSalvandoAnexo(true);
 
-      const caminho = `financeiro/contasPagar/${contaSelecionada.id}/${Date.now()}-${
-        novoAnexo.arquivo.name
-      }`;
+      const formData = new FormData();
+      formData.append("arquivo",       novoAnexo.arquivo);
+      formData.append("conta_id",      contaSelecionada.id);
+      formData.append("tipo_documento", novoAnexo.tipoDocumento);
+      formData.append("descricao",     novoAnexo.descricao || "");
 
-      const storageRef = ref(storage, caminho);
-      await uploadBytes(storageRef, novoAnexo.arquivo);
-      const url = await getDownloadURL(storageRef);
-
-      await addDoc(collection(db, "anexosFinanceiros"), {
-        contaId: contaSelecionada.id,
-        tipoDocumento: novoAnexo.tipoDocumento,
-        descricao: novoAnexo.descricao || "",
-        nomeArquivo: novoAnexo.arquivo.name,
-        caminhoStorage: caminho,
-        url,
-        criadoEm: serverTimestamp(),
-      });
+      await uploadAnexo(formData);
 
       await registrarHistorico({
-        contaId: contaSelecionada.id,
-        alteracao: `Anexo incluído: ${novoAnexo.arquivo.name}`,
+        contaId:        contaSelecionada.id,
+        alteracao:      `Anexo incluído: ${novoAnexo.arquivo.name}`,
         statusAnterior: contaSelecionada.status || "",
-        novoStatus: contaSelecionada.status || "",
+        novoStatus:     contaSelecionada.status || "",
       });
 
-      setNovoAnexo({
-        tipoDocumento: "Nota Fiscal",
-        descricao: "",
-        arquivo: null,
-      });
+      await carregarAnexos();
 
+      setNovoAnexo({ tipoDocumento: "Nota Fiscal", descricao: "", arquivo: null });
       alert("Anexo enviado com sucesso.");
     } catch (error) {
       console.error("Erro ao enviar anexo:", error);
@@ -709,23 +601,16 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
   }
 
   async function excluirAnexo(anexo) {
-    const confirmar = window.confirm("Deseja excluir este anexo?");
-    if (!confirmar) return;
-
+    if (!window.confirm("Deseja excluir este anexo?")) return;
     try {
-      if (anexo.caminhoStorage) {
-        await deleteObject(ref(storage, anexo.caminhoStorage));
-      }
-
-      await deleteDoc(doc(db, "anexosFinanceiros", anexo.id));
-
+      await api.anexosFinanceiros.excluir(anexo.id);
       await registrarHistorico({
-        contaId: anexo.contaId,
-        alteracao: `Anexo excluído: ${anexo.nomeArquivo}`,
+        contaId:        anexo.conta_id,
+        alteracao:      `Anexo excluído: ${anexo.nome_arquivo || anexo.nomeArquivo}`,
         statusAnterior: contaSelecionada?.status || "",
-        novoStatus: contaSelecionada?.status || "",
+        novoStatus:     contaSelecionada?.status || "",
       });
-
+      await carregarAnexos();
       alert("Anexo excluído.");
     } catch (error) {
       console.error("Erro ao excluir anexo:", error);
@@ -862,11 +747,11 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
   }, [contasPagar, filtros]);
 
   const anexosDaConta = anexosFinanceiros.filter(
-    (item) => item.contaId === contaSelecionada?.id
+    (item) => String(item.conta_id) === String(contaSelecionada?.id)
   );
 
   const historicoDaConta = historicoFinanceiro.filter(
-    (item) => item.contaId === contaSelecionada?.id
+    (item) => String(item.conta_id) === String(contaSelecionada?.id)
   );
 
   const movimentacoes = useMemo(() => {
@@ -1067,15 +952,16 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
         contato: novoFornecedor.contato.trim(),
         endereco: novoFornecedor.endereco.trim(),
         observacoes: novoFornecedor.observacoes.trim(),
-        atualizadoEm: serverTimestamp(),
       };
       if (modoEdicaoFornecedor && fornecedorSelecionado?.id) {
-        await updateDoc(doc(db, "fornecedores", fornecedorSelecionado.id), payload);
+        await api.fornecedores.atualizar(fornecedorSelecionado.id, payload);
         alert("Fornecedor atualizado.");
       } else {
-        await addDoc(collection(db, "fornecedores"), { ...payload, criadoEm: serverTimestamp() });
+        await api.fornecedores.criar(payload);
         alert("Fornecedor cadastrado.");
       }
+      const resF = await api.fornecedores.listar();
+      setFornecedores(resF.data || []);
       limparFornecedor();
     } catch (err) {
       console.error("Erro ao salvar fornecedor:", err);
@@ -1088,8 +974,10 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
   async function excluirFornecedor(f) {
     if (!window.confirm(`Excluir o fornecedor "${f.nome}"?`)) return;
     try {
-      await deleteDoc(doc(db, "fornecedores", f.id));
+      await api.fornecedores.excluir(f.id);
       if (fornecedorSelecionado?.id === f.id) limparFornecedor();
+      const res = await api.fornecedores.listar();
+      setFornecedores(res.data || []);
     } catch (err) {
       console.error("Erro ao excluir fornecedor:", err);
       alert("Não foi possível excluir o fornecedor.");
@@ -1779,9 +1667,9 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
                         <tbody>
                           {anexosDaConta.map((item) => (
                             <tr key={item.id}>
-                              <td>{item.tipoDocumento}</td>
+                              <td>{item.tipo_documento || item.tipoDocumento}</td>
                               <td>{item.descricao || "—"}</td>
-                              <td>{item.nomeArquivo}</td>
+                              <td>{item.nome_arquivo || item.nomeArquivo}</td>
                               <td>
                                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                                   <a
@@ -1963,9 +1851,9 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
                           {historicoDaConta.map((item) => (
                             <tr key={item.id}>
                               <td>{item.alteracao}</td>
-                              <td>{item.statusAnterior || "—"}</td>
-                              <td>{item.novoStatus || "—"}</td>
-                              <td>{item.editadoPor || item.criadoPor || "—"}</td>
+                              <td>{item.status_anterior || item.statusAnterior || "—"}</td>
+                              <td>{item.novo_status || item.novoStatus || "—"}</td>
+                              <td>{item.editado_por || item.criado_por || item.editadoPor || item.criadoPor || "—"}</td>
                             </tr>
                           ))}
 

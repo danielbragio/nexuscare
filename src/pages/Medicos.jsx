@@ -189,7 +189,7 @@ export default function Medicos({
   onSalvarProntuario,
   onFinalizarAtendimento,
 }) {
-  const { firebaseUser, userData } = useAuth();
+  const { userData } = useAuth();
   const [busca, setBusca] = useState("");
   const [abaLista, setAbaLista] = useState("agendados");
   const [consultaSelecionada, setConsultaSelecionada] = useState(null);
@@ -245,19 +245,21 @@ export default function Medicos({
     const role = userData?.role || "";
     const isAdmin = role === "admin" || (Array.isArray(userData?.permissions) && userData.permissions.includes("administracao"));
     const isRecepcao = role === "recepcao";
-    const uid = firebaseUser?.uid || "";
+    const meuId = String(userData?.id || "");
     const nome = (userData?.nome || userData?.name || "").toLowerCase().trim();
     return [...consultas]
       .filter((c) => {
         if (normStatus(c.status) === "finalizado") return false;
         if (c.pagamentoId && !consultasComPagamento.has(c.id)) return false;
         if (isAdmin || isRecepcao) return true;
-        const mId = (c.medicoId || c.profissionalId || "").trim();
-        if (mId) return mId === uid;
+        const mId = c.usuarioId != null
+          ? String(c.usuarioId)
+          : (c.profissionalId || "").trim();
+        if (mId) return mId === meuId;
         return (c.medico || c.profissionalNome || "").toLowerCase().trim() === nome;
       })
       .sort((a, b) => `${a.data} ${a.hora}`.localeCompare(`${b.data} ${b.hora}`));
-  }, [consultas, consultasComPagamento, userData, firebaseUser]);
+  }, [consultas, consultasComPagamento, userData]);
 
   const consultasFiltradas = useMemo(() =>
     consultasAtivas.filter((c) =>

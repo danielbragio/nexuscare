@@ -1,52 +1,53 @@
-import { createContext, useContext, useEffect, useState } from "react";
-import { onAuthStateChanged, signOut } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
-import { auth, db } from "../services/firebase";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import api, { tokenStorage } from "../services/api";
 
 const AuthContext = createContext();
 
 export function AuthProvider({ children }) {
-  const [firebaseUser, setFirebaseUser] = useState(null);
   const [userData, setUserData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading]   = useState(true);
 
+  // Ao montar: valida o JWT salvo e carrega o usuário
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    async function init() {
+      const token = tokenStorage.get();
+      if (!token) { setLoading(false); return; }
       try {
-        if (!user) {
-          setFirebaseUser(null);
-          setUserData(null);
-          setLoading(false);
-          return;
-        }
-
-        setFirebaseUser(user);
-
-        const userRef = doc(db, "users", user.uid);
-        const userSnap = await getDoc(userRef);
-
-        if (userSnap.exists()) {
-          setUserData(userSnap.data());
-        } else {
-          setUserData(null);
-        }
-      } catch (error) {
-        console.error("Erro ao carregar usuário:", error);
-        setUserData(null);
+        const res = await api.auth.me();
+        if (res?.data) setUserData(res.data);
+        else tokenStorage.remove();
+      } catch {
+        tokenStorage.remove();
       } finally {
         setLoading(false);
       }
-    });
-
-    return () => unsubscribe();
+    }
+    init();
   }, []);
 
-  async function logout() {
-    await signOut(auth);
-  }
+  const login = useCallback(async (identifier, password) => {
+    const res = await api.auth.login(identifier, password);
+    if (res?.data?.user) setUserData(res.data.user);
+    return res;
+  }, []);
+
+  const logout = useCallback(async () => {
+    try { await api.auth.logout(); } catch { }
+    tokenStorage.remove();
+    setUserData(null);
+  }, []);
+
+  const refreshUserData = useCallback(async () => {
+    try {
+      const res = await api.auth.me();
+      if (res?.data) setUserData(res.data);
+    } catch (err) {
+      console.error("Erro ao recarregar userData:", err);
+    }
+  }, []);
 
   return (
-    <AuthContext.Provider value={{ firebaseUser, userData, loading, logout }}>
+    <AuthContext.Provider value={{ userData, loading, login, logout, refreshUserData }}>
       {children}
     </AuthContext.Provider>
   );

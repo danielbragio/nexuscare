@@ -1,10 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { sendPasswordResetEmail } from "firebase/auth";
-import { auth, db, storage } from "../services/firebase";
-import { doc, serverTimestamp, updateDoc } from "firebase/firestore";
-import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
-import { allModules, rolePermissions } from "../config/permissions";
+import { useEffect, useMemo, useState } from "react";
+import { PERMISSION_GROUPS, getDefaultPermissions } from "../config/permissions";
 import { ESPECIALIDADES_MEDICO, ESPECIALIDADES_ODONTO } from "../config/especialidades";
+import api from "../services/api";
 
 const DIAS_ATENDIMENTO = [
   "domingo",
@@ -49,14 +46,16 @@ function ModalCriarEditar({
     senha: "",
     confirmarSenha: "",
     role: usuario?.role || "recepcao",
+    cargo: usuario?.cargo || "",
     crm: usuario?.crm || "",
     coren: usuario?.coren || "",
     especialidade: usuario?.especialidade || "",
     ativo: usuario?.ativo !== false,
+    atendePacientes: Boolean(usuario?.atende_pacientes),
     permissions:
       Array.isArray(usuario?.permissions) && usuario.permissions.length > 0
         ? usuario.permissions
-        : rolePermissions[usuario?.role || "recepcao"] || [],
+        : getDefaultPermissions(usuario?.role || "recepcao"),
     diasAtendimento: Array.isArray(usuario?.diasAtendimento) ? usuario.diasAtendimento : [],
     horarios: Array.isArray(usuario?.horarios) ? usuario.horarios : [],
     horaInicio: usuario?.horaInicio || "",
@@ -84,10 +83,12 @@ function ModalCriarEditar({
 
   function alterarRole(role) {
     const temAgenda = role === "medico" || role === "enfermagem" || role === "odonto";
+    const temPacientes = role === "medico" || role === "enfermagem" || role === "odonto";
     setForm((prev) => ({
       ...prev,
       role,
-      permissions: rolePermissions[role] || [],
+      permissions: getDefaultPermissions(role),
+      atendePacientes: temPacientes,
       especialidade: role === "medico" || role === "odonto" ? prev.especialidade : "",
       diasAtendimento: temAgenda ? prev.diasAtendimento : [],
       horarios: temAgenda ? prev.horarios : [],
@@ -186,10 +187,10 @@ function ModalCriarEditar({
       onClose();
     } catch (error) {
       console.error(error);
-      if (error.message === "USERNAME_DUPLICADO") { alert("Usuário de login já existe. Escolha outro."); return; }
-      if (error.message === "EMAIL_DUPLICADO") { alert("E-mail já cadastrado."); return; }
-      if (error.code === "auth/email-already-in-use") { alert("E-mail já existe no Firebase Auth."); return; }
-      alert("Erro ao salvar. Verifique os dados e tente novamente.");
+      const msg = error?.data?.message || error.message || "";
+      if (msg.includes("LOGIN_DUPLICADO") || msg.includes("USERNAME_DUPLICADO")) { alert("Usuário de login já existe. Escolha outro."); return; }
+      if (msg.includes("E-mail já cadastrado") || msg.includes("EMAIL_DUPLICADO")) { alert("E-mail já cadastrado."); return; }
+      alert(`Erro ao salvar: ${msg || "Verifique os dados e tente novamente."}`);
     } finally {
       setSalvando(false);
     }
@@ -384,6 +385,30 @@ function ModalCriarEditar({
                   <option value="true">Ativo</option>
                   <option value="false">Inativo</option>
                 </select>
+              </div>
+
+              <div>
+                <label style={labelStyle}>Cargo</label>
+                <input
+                  className="input"
+                  name="cargo"
+                  value={form.cargo}
+                  onChange={handleChange}
+                  placeholder="Ex.: Médico Clínico, Enfermeira"
+                />
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", paddingTop: "22px" }}>
+                <input
+                  type="checkbox"
+                  id="atendePacientes"
+                  checked={form.atendePacientes}
+                  onChange={(e) => setForm((prev) => ({ ...prev, atendePacientes: e.target.checked }))}
+                  style={{ width: 16, height: 16, cursor: "pointer" }}
+                />
+                <label htmlFor="atendePacientes" style={{ ...labelStyle, marginBottom: 0, cursor: "pointer" }}>
+                  Atende pacientes (aparece na fila clínica)
+                </label>
               </div>
 
               {form.role === "medico" && (
@@ -654,70 +679,66 @@ function ModalCriarEditar({
                   border: "1px solid #bbf7d0",
                 }}
               >
-                Os módulos são sugeridos automaticamente pelo perfil escolhido, mas podem ser
-                personalizados livremente.
+                As permissões são sugeridas pelo perfil base, mas podem ser personalizadas livremente.
               </div>
 
-              <div>
-                <label style={{ ...labelStyle, marginBottom: "10px" }}>Módulos de acesso</label>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
-                    gap: "8px",
-                  }}
-                >
-                  {allModules.map((modulo) => (
-                    <label
-                      key={modulo.key}
-                      className="muted-box"
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "8px",
-                        cursor: "pointer",
-                        marginBottom: 0,
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={form.permissions.includes(modulo.key)}
-                        onChange={() => togglePermissao(modulo.key)}
-                      />
-                      <span style={{ fontSize: "13px" }}>{modulo.label}</span>
-                    </label>
-                  ))}
+              {PERMISSION_GROUPS.map((grupo) => (
+                <div key={grupo.grupo}>
+                  <div
+                    style={{
+                      fontSize: "11px",
+                      fontWeight: 700,
+                      color: "#64748b",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.6px",
+                      marginBottom: "8px",
+                    }}
+                  >
+                    {grupo.grupo}
+                  </div>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fill, minmax(175px, 1fr))",
+                      gap: "6px",
+                    }}
+                  >
+                    {grupo.permissoes.map((perm) => (
+                      <label
+                        key={perm.key}
+                        className="muted-box"
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px",
+                          cursor: "pointer",
+                          marginBottom: 0,
+                          padding: "7px 10px",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={form.permissions.includes(perm.key)}
+                          onChange={() => togglePermissao(perm.key)}
+                        />
+                        <span style={{ fontSize: "13px" }}>{perm.label}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              ))}
 
               <div
                 style={{
-                  padding: "12px",
+                  padding: "10px 12px",
                   background: "#f8fafc",
                   borderRadius: "8px",
                   border: "1px solid #e2e8f0",
+                  fontSize: "12px",
+                  color: "#64748b",
                 }}
               >
-                <div style={{ fontSize: "12px", color: "#64748b", marginBottom: "8px" }}>
-                  Módulos selecionados:{" "}
-                  <strong style={{ color: "#1e293b" }}>{form.permissions.length}</strong>
-                </div>
-                <div>
-                  {form.permissions.map((p) => (
-                    <span
-                      key={p}
-                      className="badge"
-                      style={{ marginRight: "6px", marginBottom: "6px" }}
-                    >
-                      {p}
-                    </span>
-                  ))}
-                  {form.permissions.length === 0 && (
-                    <span style={{ fontSize: "12px", color: "#94a3b8" }}>
-                      Nenhum módulo selecionado.
-                    </span>
-                  )}
-                </div>
+                <strong style={{ color: "#1e293b" }}>{form.permissions.length}</strong> permissão(ões) selecionada(s)
               </div>
             </div>
           )}
@@ -831,34 +852,8 @@ function ModalCriarEditar({
 
 // ─── Modal perfil do usuário (visão admin) ─────────────────────────────────────
 
-function ModalPerfilUsuario({ usuario, onClose, onEditar, onResetarSenha }) {
-  const [uploadando, setUploadando] = useState(false);
-  const [fotoURL, setFotoURL] = useState(usuario?.photoURL || "");
-  const fileRef = useRef(null);
+function ModalPerfilUsuario({ usuario, onClose, onEditar, onRedefinirSenha }) {
   const inicial = (usuario?.nome || usuario?.email || "U").charAt(0).toUpperCase();
-
-  async function handleFoto(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!file.type.startsWith("image/")) { alert("Selecione um arquivo de imagem."); return; }
-    if (file.size > 5 * 1024 * 1024) { alert("A imagem deve ter menos de 5 MB."); return; }
-    try {
-      setUploadando(true);
-      const storageRef = ref(storage, `profilePhotos/${usuario.id}`);
-      await uploadBytes(storageRef, file);
-      const url = await getDownloadURL(storageRef);
-      await updateDoc(doc(db, "users", usuario.id), {
-        photoURL: url,
-        updatedAt: serverTimestamp(),
-      });
-      setFotoURL(url);
-    } catch (err) {
-      console.error("Erro ao salvar foto:", err);
-      alert("Não foi possível salvar a foto. Verifique as permissões do Storage.");
-    } finally {
-      setUploadando(false);
-    }
-  }
 
   function formatarData(ts) {
     if (!ts) return "—";
@@ -874,10 +869,12 @@ function ModalPerfilUsuario({ usuario, onClose, onEditar, onResetarSenha }) {
     { label: "E-mail", value: usuario?.email || "—" },
     { label: "Usuário de login", value: usuario?.username || usuario?.usuario || usuario?.login || "—" },
     { label: "Perfil", value: usuario?.role || "—" },
+    { label: "Cargo", value: usuario?.cargo || null },
     { label: "Especialidade", value: usuario?.especialidade || null },
     { label: "CRM", value: usuario?.crm || null },
     { label: "COREN", value: usuario?.coren || null },
     { label: "CRO", value: usuario?.cro || null },
+    { label: "Atende pacientes", value: usuario?.atende_pacientes ? "Sim" : null },
     {
       label: "Status",
       value: usuario?.ativo !== false ? "Ativo" : "Inativo",
@@ -924,70 +921,26 @@ function ModalPerfilUsuario({ usuario, onClose, onEditar, onResetarSenha }) {
             flexShrink: 0,
           }}
         >
-          <div style={{ position: "relative", flexShrink: 0 }}>
-            {fotoURL ? (
-              <img
-                src={fotoURL}
-                alt="Foto"
-                style={{
-                  width: 62,
-                  height: 62,
-                  borderRadius: "50%",
-                  objectFit: "cover",
-                  border: "3px solid rgba(255,255,255,0.3)",
-                  display: "block",
-                }}
-              />
-            ) : (
-              <div
-                style={{
-                  width: 62,
-                  height: 62,
-                  borderRadius: "50%",
-                  background: "rgba(255,255,255,0.18)",
-                  border: "3px solid rgba(255,255,255,0.3)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: "24px",
-                  fontWeight: 700,
-                  color: "#fff",
-                }}
-              >
-                {inicial}
-              </div>
-            )}
-            <button
-              onClick={() => fileRef.current?.click()}
-              disabled={uploadando}
-              title={uploadando ? "Enviando..." : "Alterar foto"}
+          <div style={{ flexShrink: 0 }}>
+            <div
               style={{
-                position: "absolute",
-                bottom: -2,
-                right: -2,
-                width: 22,
-                height: 22,
+                width: 62,
+                height: 62,
                 borderRadius: "50%",
-                background: "#1F7A63",
-                border: "2px solid #fff",
-                cursor: uploadando ? "wait" : "pointer",
+                background: "rgba(255,255,255,0.18)",
+                border: "3px solid rgba(255,255,255,0.3)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                fontSize: "10px",
+                fontSize: "24px",
+                fontWeight: 700,
                 color: "#fff",
-                padding: 0,
               }}
             >
-              {uploadando ? "…" : "✏"}
-            </button>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*"
-              style={{ display: "none" }}
-              onChange={handleFoto}
-            />
+              {usuario?.photoURL
+                ? <img src={usuario.photoURL} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
+                : inicial}
+            </div>
           </div>
 
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -1144,10 +1097,10 @@ function ModalPerfilUsuario({ usuario, onClose, onEditar, onResetarSenha }) {
         >
           <button
             className="secondary-btn"
-            onClick={onResetarSenha}
-            title="Enviar e-mail de redefinição de senha"
+            onClick={onRedefinirSenha}
+            title="Definir nova senha para este usuário"
           >
-            Resetar senha
+            Redefinir senha
           </button>
           <div style={{ display: "flex", gap: "8px" }}>
             <button className="secondary-btn" onClick={onClose}>
@@ -1211,11 +1164,13 @@ export default function Administracao({
       email: payload.email,
       username: payload.username,
       role: payload.role,
+      cargo: payload.cargo || null,
       crm: payload.role === "medico" ? payload.crm : "",
       coren: payload.role === "enfermagem" ? payload.coren : "",
       especialidade:
         payload.role === "medico" || payload.role === "odonto" ? payload.especialidade : "",
       ativo: payload.ativo,
+      atendePacientes: payload.atendePacientes || false,
       permissions: payload.permissions,
       diasAtendimento: profAgenda ? payload.diasAtendimento : [],
       horarios: profAgenda ? payload.horarios : [],
@@ -1242,14 +1197,18 @@ export default function Administracao({
     onAtualizarUsuario(usuario.id, { ativo: !usuario.ativo });
   }
 
-  async function resetarSenha(usuario) {
-    if (!usuario?.email) { alert("Este usuário não possui e-mail."); return; }
+  async function redefinirSenha(usuario) {
+    const novaSenha = window.prompt(
+      `Defina a nova senha para ${usuario?.nome || usuario?.email}:\n(mínimo 6 caracteres)`
+    );
+    if (!novaSenha) return;
+    if (novaSenha.length < 6) { alert("A senha deve ter pelo menos 6 caracteres."); return; }
     try {
-      await sendPasswordResetEmail(auth, usuario.email);
-      alert("E-mail de redefinição enviado com sucesso.");
+      await api.usuarios.atualizar(usuario.id, { senha: novaSenha });
+      alert("Senha redefinida com sucesso.");
     } catch (err) {
       console.error(err);
-      alert("Não foi possível enviar o e-mail.");
+      alert("Não foi possível redefinir a senha.");
     }
   }
 
@@ -1538,7 +1497,7 @@ export default function Administracao({
           usuario={usuarioPerfil}
           onClose={() => setUsuarioPerfil(null)}
           onEditar={() => abrirEdicao(usuarioPerfil)}
-          onResetarSenha={() => resetarSenha(usuarioPerfil)}
+          onRedefinirSenha={() => redefinirSenha(usuarioPerfil)}
         />
       )}
     </div>
