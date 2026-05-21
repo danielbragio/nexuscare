@@ -92,12 +92,12 @@ export const PERMISSION_VIEW_MAP = {
   movimentacoes:           ["financeiro"],
   estoque:                 ["estoque"],
   relatorios_financeiros:  ["relatorios"],
-  // Administração
-  usuarios:                ["administracao"],
-  permissoes:              ["administracao"],
-  especialidades_config:   ["administracao"],
-  profissionais:           ["administracao"],
-  configuracoes:           ["administracao"],
+  // Administração → tudo aponta para Configurações
+  usuarios:                ["configuracoes", "cadastros"],
+  permissoes:              ["configuracoes", "cadastros"],
+  especialidades_config:   ["configuracoes", "cadastros"],
+  profissionais:           ["configuracoes", "cadastros"],
+  configuracoes:           ["configuracoes", "cadastros"],
   // Relatórios
   relatorio_financeiro:    ["relatorios"],
   relatorio_atendimentos:  ["relatorios"],
@@ -111,8 +111,9 @@ export const PERMISSION_VIEW_MAP = {
   financeiro:              ["financeiro"],
   faturamento:             ["faturamento"],
   relatorios:              ["relatorios"],
-  administracao:           ["administracao"],
+  administracao:           ["configuracoes", "cadastros"],
   normas:                  ["normas"],
+  cadastros:               ["cadastros"],
 };
 
 // ── Permissões padrão por perfil base ─────────────────────────────────────────
@@ -124,9 +125,9 @@ export const rolePermissions = {
     "usuarios","permissoes","especialidades_config","profissionais","configuracoes",
     "relatorio_financeiro","relatorio_atendimentos","relatorio_pacientes","exportar_pdf","exportar_excel",
     // legadas
-    "dashboard","pacientes","faturamento","normas",
+    "dashboard","pacientes","faturamento","normas","cadastros",
   ],
-  recepcao:   ["recepcao","agendamentos","painel_atendimento","dashboard","pacientes"],
+  recepcao:   ["recepcao","agendamentos","painel_atendimento","dashboard","pacientes","pagamentos"],
   medico:     ["consultas","medicos","prontuario","dashboard"],
   enfermagem: ["enfermagem","prontuario","dashboard"],
   odonto:     ["odonto","prontuario","dashboard"],

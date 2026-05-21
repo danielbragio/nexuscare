@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { useAuth } from "../context/AuthContext";
+import { useToast } from "../context/ToastContext";
 import api from "../services/api";
+import { hojeISO, normalizarFormaPagamento } from "../utils/dateUtils";
 
 function normalizarTexto(valor) {
   return (valor || "")
@@ -9,16 +10,6 @@ function normalizarTexto(valor) {
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
-}
-
-function normalizarStatus(status) {
-  const texto = normalizarTexto(status);
-
-  if (texto === "finalizado" || texto === "finalizada") return "finalizado";
-  if (texto === "em atendimento" || texto === "em_atendimento") return "em_atendimento";
-  if (texto === "agendada" || texto === "agendado") return "agendado";
-
-  return texto || "agendado";
 }
 
 function normalizarStatusPagamento(status) {
@@ -32,17 +23,9 @@ function normalizarStatusPagamento(status) {
   return texto;
 }
 
-function obterDataHoje() {
-  const hoje = new Date();
-  const ano = hoje.getFullYear();
-  const mes = String(hoje.getMonth() + 1).padStart(2, "0");
-  const dia = String(hoje.getDate()).padStart(2, "0");
 
-  return `${ano}-${mes}-${dia}`;
-}
-
-export default function Pagamentos({ pacientes = [], consultas = [], pagamentos = [], pagamentoCheckout = null, onLimparCheckout, onIrParaFinanceiro, onIrParaRelatorios }) {
-  const { userData } = useAuth();
+export default function Pagamentos({ pacientes = [], consultas = [], pagamentos = [], pagamentoCheckout = null, onLimparCheckout, onIrParaFinanceiro, onIrParaRelatorios, onPagamentoCriado, carregando = false }) {
+  const toast = useToast();
 
   const [salvandoPagamento, setSalvandoPagamento] = useState(false);
   const [pagamentoIdParaAtualizar, setPagamentoIdParaAtualizar] = useState(null);
@@ -53,11 +36,13 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentos 
     cpf: "",
     telefone: "",
     atendimentoId: "",
+    atendimentoOdontoId: "",
+    agendamentoOdontoId: "",
     tipoAtendimento: "",
     valor: "",
-    formaPagamento: "Dinheiro",
-    statusPagamento: "Pago",
-    dataPagamento: new Date().toISOString().split("T")[0],
+    formaPagamento: "",
+    statusPagamento: "",
+    dataPagamento: hojeISO(),
     observacoes: "",
   });
 
@@ -69,11 +54,13 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentos 
       cpf: pagamentoCheckout.cpf || "",
       telefone: pagamentoCheckout.telefone || "",
       atendimentoId: pagamentoCheckout.atendimentoId || "",
+      atendimentoOdontoId: pagamentoCheckout.atendimentoOdontoId || "",
+      agendamentoOdontoId: pagamentoCheckout.agendamentoOdontoId || "",
       tipoAtendimento: pagamentoCheckout.tipoAtendimento || "",
       valor: pagamentoCheckout.valor || "",
-      formaPagamento: "Dinheiro",
-      statusPagamento: "Pago",
-      dataPagamento: new Date().toISOString().split("T")[0],
+      formaPagamento: "",
+      statusPagamento: "",
+      dataPagamento: hojeISO(),
       observacoes: "",
     });
     setPagamentoIdParaAtualizar(pagamentoCheckout.pagamentoId || null);
@@ -81,40 +68,86 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentos 
 
   const atendimentosPagos = useMemo(() => {
     return pagamentos
-      .filter((item) => normalizarStatusPagamento(item.statusPagamento) === "pago")
-      .map((item) => item.atendimentoId)
+      .filter((item) => {
+        const s = normalizarStatusPagamento(item.statusPagamento);
+        return s === "pago" || s === "cortesia";
+      })
+      .map((item) => String(item.atendimentoId || item.atendimento_id || ""))
       .filter(Boolean);
   }, [pagamentos]);
 
   const atendimentosDoDia = useMemo(() => {
-    const hoje = obterDataHoje();
+    const hoje = hojeISO();
 
-    return consultas
-      .filter((item) => {
-        const statusConsulta = normalizarStatus(item.status);
-        const atendimentoAtivo =
-          statusConsulta === "agendado" || statusConsulta === "em_atendimento";
-        const atendimentoHoje = item.data === hoje || item.chegouHoje;
-        const atendimentoImediato =
-          normalizarTexto(item.tipoAtendimento).includes("imediato") ||
-          normalizarTexto(item.tipoAtendimento).includes("pronto");
-        const temPaciente = item.paciente || item.nomePaciente || item.cpf;
-        const aindaNaoPago = !atendimentosPagos.includes(item.id);
-
-        return (
-          temPaciente &&
-          aindaNaoPago &&
-          statusConsulta !== "finalizado" &&
-          (atendimentoHoje || atendimentoAtivo || atendimentoImediato)
-        );
+    const pagamentosClinicosPendentes = pagamentos
+      .filter((p) => {
+        const statusP = normalizarStatusPagamento(p.statusPagamento);
+        const dataP = (p.dataPagamento || p.data || "").slice(0, 10);
+        const ehClinico = !!(p.atendimentoId || p.atendimento_id) && !p.atendimento_odonto_id;
+        const ehHojeOuAntes = dataP && dataP <= hoje;
+        return statusP === "pendente" && ehClinico && ehHojeOuAntes;
       })
+      .map((p) => {
+        const atendimentoRef = p.atendimentoId || p.atendimento_id;
+        const consulta = consultas.find((c) => String(c.id) === String(atendimentoRef));
+        const dataP = (p.dataPagamento || p.data || "").slice(0, 10);
+        return {
+          id:              atendimentoRef || p.id,
+          pacienteId:      p.pacienteId || p.paciente_id || consulta?.pacienteId || "",
+          paciente:        p.paciente || p.nomePaciente || consulta?.paciente || "",
+          nomePaciente:    p.paciente || p.nomePaciente || consulta?.paciente || "",
+          data:            dataP,
+          hora:            consulta?.hora || "",
+          tipoAtendimento: p.descricao || consulta?.especialidade || "Consulta",
+          cpf:             consulta?.cpf || "",
+          telefone:        consulta?.telefone || "",
+          _tipoFila:       "clinico_pendente",
+          _pagamentoId:    p.id,
+          _valor:          p.valorFinal || p.valor,
+          _profissional:   p.profissional || consulta?.medico || "",
+          _descricao:      p.descricao || consulta?.tipoAtendimento || "Consulta",
+          _atrasado:       dataP < hoje,
+        };
+      });
+
+    // Pagamentos Odonto pendentes (hoje ou atrasados — ainda não confirmados)
+    const pagamentosOdontoPendentes = pagamentos
+      .filter((p) => {
+        const statusP = normalizarStatusPagamento(p.statusPagamento);
+        const origem = (p.origem || p.tipo || "").toLowerCase();
+        const dataP = (p.dataPagamento || p.data || "").slice(0, 10);
+        const ehOdonto = origem === "odonto" || !!p.atendimento_odonto_id;
+        const ehHojeOuAntes = dataP && dataP <= hoje;
+        return statusP === "pendente" && ehOdonto && ehHojeOuAntes;
+      })
+      .map((p) => {
+        const dataP = (p.dataPagamento || p.data || "").slice(0, 10);
+        return {
+          id:              p.atendimento_odonto_id || p.atendimentoId || p.id,
+          paciente:        p.paciente || p.nomePaciente || "",
+          nomePaciente:    p.paciente || p.nomePaciente || "",
+          data:            dataP,
+          hora:            "",
+          tipoAtendimento: p.descricao || p.tipoAtendimento || "Odontologia",
+          cpf:             "",
+          telefone:        "",
+          _tipoFila:       "odonto_pendente",
+          _pagamentoId:    p.id,
+          _valor:          p.valor,
+          _profissional:   p.profissional || "",
+          _descricao:      p.descricao || p.tipoAtendimento || "Odontologia",
+          _atrasado:       dataP < hoje,
+        };
+      });
+
+    return [...pagamentosClinicosPendentes, ...pagamentosOdontoPendentes]
       .sort(
         (a, b) =>
           (a.data || "").localeCompare(b.data || "") ||
           (a.hora || "").localeCompare(b.hora || "") ||
           (a.paciente || "").localeCompare(b.paciente || "")
       );
-  }, [consultas, atendimentosPagos]);
+  }, [consultas, pagamentos]);
 
   const pagamentosPagos = pagamentos.filter(
     (item) => normalizarStatusPagamento(item.statusPagamento) === "pago"
@@ -159,9 +192,28 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentos 
   }
 
   function selecionarAtendimentoPagamento(atendimentoId) {
+    // Verificar se é um item odonto pendente da fila
+    const itemFila = atendimentosDoDia.find((item) => String(item.id) === String(atendimentoId));
+    if (itemFila?._tipoFila === "odonto_pendente" || itemFila?._tipoFila === "clinico_pendente") {
+      // Pagamento já existe — só precisamos atualizar forma/status
+      setPagamentoIdParaAtualizar(itemFila._pagamentoId);
+      setPagamento((prev) => ({
+        ...prev,
+        atendimentoId:   String(itemFila.id),
+        pacienteId:      itemFila.pacienteId || "",
+        paciente:        itemFila.paciente || "",
+        cpf:             itemFila.cpf || "",
+        telefone:        itemFila.telefone || "",
+        tipoAtendimento: itemFila._descricao || itemFila.tipoAtendimento || "Atendimento",
+        valor:           String(itemFila._valor || ""),
+      }));
+      return;
+    }
+
     const atendimentoSelecionado = consultas.find((item) => item.id === atendimentoId);
 
     if (!atendimentoSelecionado) {
+      setPagamentoIdParaAtualizar(null);
       setPagamento((prev) => ({
         ...prev,
         atendimentoId: "",
@@ -208,9 +260,9 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentos 
       atendimentoId: "",
       tipoAtendimento: "",
       valor: "",
-      formaPagamento: "Dinheiro",
-      statusPagamento: "Pago",
-      dataPagamento: new Date().toISOString().split("T")[0],
+      formaPagamento: "",
+      statusPagamento: "",
+      dataPagamento: hojeISO(),
       observacoes: "",
     });
     setPagamentoIdParaAtualizar(null);
@@ -225,28 +277,32 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentos 
       !pagamento.statusPagamento ||
       !pagamento.dataPagamento
     ) {
-      alert("Preencha paciente, serviço, valor, forma, status e data do pagamento.");
+      toast.warn("Preencha paciente, serviço, valor, forma, status e data do pagamento.");
       return;
     }
 
-    if (!pagamento.atendimentoId) {
-      alert("Selecione um atendimento do dia para evitar duplicidade de pagamento.");
+    const temReferenciaAtendimento =
+      pagamento.atendimentoId || pagamento.atendimentoOdontoId || pagamento.agendamentoOdontoId;
+
+    if (!temReferenciaAtendimento) {
+      toast.warn("Selecione um atendimento do dia para evitar duplicidade de pagamento.");
       return;
     }
 
     if (
       normalizarStatusPagamento(pagamento.statusPagamento) === "pago" &&
-      atendimentosPagos.includes(pagamento.atendimentoId)
+      pagamento.atendimentoId &&
+      atendimentosPagos.includes(String(pagamento.atendimentoId))
     ) {
-      alert("Este atendimento já possui pagamento registrado como pago.");
+      toast.warn("Este atendimento já possui pagamento registrado como pago.");
       limparPagamento();
       return;
     }
 
     const valorNumerico = Number(String(pagamento.valor).replace(",", "."));
 
-    if (Number.isNaN(valorNumerico) || valorNumerico < 0) {
-      alert("Informe um valor válido para o pagamento.");
+    if (Number.isNaN(valorNumerico) || valorNumerico <= 0) {
+      toast.warn("Informe um valor válido para o pagamento.");
       return;
     }
 
@@ -254,6 +310,7 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentos 
       setSalvandoPagamento(true);
 
       const statusNorm = pagamento.statusPagamento.toLowerCase();
+      const formaNorm = normalizarFormaPagamento(pagamento.formaPagamento);
 
       if (pagamentoIdParaAtualizar) {
         // Atualizar pagamento existente via API MySQL
@@ -262,46 +319,62 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentos 
           descricao:        pagamento.tipoAtendimento,
           valor:            valorNumerico,
           valor_final:      valorNumerico,
-          forma_pagamento:  pagamento.formaPagamento,
+          forma_pagamento:  formaNorm,
           status_pagamento: pagamento.statusPagamento,
           status:           statusNorm,
           data_pagamento:   pagamento.dataPagamento,
           observacoes:      pagamento.observacoes || "",
         });
-
-
       } else {
         // Criar novo pagamento via API MySQL
+        // atendimento_id = médico; atendimento_odonto_id = odonto
+        const atendimentoRef = pagamento.atendimentoId ? String(pagamento.atendimentoId) : null;
+        const atendimentoOdontoRef = pagamento.atendimentoOdontoId ? String(pagamento.atendimentoOdontoId) : null;
+        const agendamentoOdontoRef = pagamento.agendamentoOdontoId ? String(pagamento.agendamentoOdontoId) : null;
         await api.pagamentos.criar({
-          paciente_id:             pagamento.pacienteId || null,
-          nome_paciente:           pagamento.paciente,
-          descricao:               pagamento.tipoAtendimento,
-          servico:                 pagamento.tipoAtendimento,
-          valor:                   valorNumerico,
-          desconto:                0,
-          valor_final:             valorNumerico,
-          status:                  statusNorm,
-          status_pagamento:        pagamento.statusPagamento,
-          forma_pagamento:         pagamento.formaPagamento,
-          tipo:                    "Entrada",
-          origem:                  "Pagamentos",
-          atendimento_odonto_id:   pagamento.atendimentoId ? String(pagamento.atendimentoId) : null,
-          data:                    pagamento.dataPagamento,
-          data_pagamento:          pagamento.dataPagamento,
-          observacoes:             pagamento.observacoes || "",
+          paciente_id:      pagamento.pacienteId || null,
+          nome_paciente:    pagamento.paciente,
+          descricao:        pagamento.tipoAtendimento,
+          servico:          pagamento.tipoAtendimento,
+          valor:            valorNumerico,
+          desconto:         0,
+          valor_final:      valorNumerico,
+          status:           statusNorm,
+          status_pagamento: pagamento.statusPagamento,
+          forma_pagamento:  formaNorm,
+          tipo:             "Entrada",
+          origem:           "Pagamentos",
+          atendimento_id:   atendimentoOdontoRef || agendamentoOdontoRef ? null : atendimentoRef,
+          atendimento_odonto_id: atendimentoOdontoRef,
+          agendamento_odonto_id: agendamentoOdontoRef,
+          data:             pagamento.dataPagamento,
+          data_pagamento:   pagamento.dataPagamento,
+          observacoes:      pagamento.observacoes || "",
         });
       }
 
       setPagamentoIdParaAtualizar(null);
       onLimparCheckout?.();
       limparPagamento();
-      alert("Pagamento registrado com sucesso. Ele já ficará disponível no Financeiro.");
+      onPagamentoCriado?.();
+      toast.success("Pagamento registrado com sucesso. Financeiro e Faturamento atualizados.");
     } catch (error) {
       console.error("Erro ao salvar pagamento:", error);
-      alert("Não foi possível registrar o pagamento.");
+      toast.error("Não foi possível registrar o pagamento.");
     } finally {
       setSalvandoPagamento(false);
     }
+  }
+
+  if (carregando && pagamentos.length === 0) {
+    return (
+      <div className="patients-page" style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ textAlign: "center", color: "var(--text-secondary, #94a3b8)" }}>
+          <div style={{ width: 36, height: 36, border: "3px solid rgba(148,163,184,0.3)", borderTopColor: "#0f8ec7", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 12px" }} />
+          <p>Carregando pagamentos...</p>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -358,32 +431,6 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentos 
               Relatórios
             </button>
           )}
-        </div>
-      </div>
-
-      <div className="stats-grid">
-        <div className="stat-box patients-stat patients-stat-blue">
-          <div className="stat-label">Atendimentos disponíveis</div>
-          <div className="stat-value">{atendimentosDoDia.length}</div>
-          <div className="stat-info">Ainda sem pagamento confirmado</div>
-        </div>
-
-        <div className="stat-box patients-stat patients-stat-green">
-          <div className="stat-label">Pagamentos pagos</div>
-          <div className="stat-value">{pagamentosPagos.length}</div>
-          <div className="stat-info">Recebimentos confirmados</div>
-        </div>
-
-        <div className="stat-box patients-stat patients-stat-purple">
-          <div className="stat-label">Pendentes</div>
-          <div className="stat-value">{pagamentosPendentes.length}</div>
-          <div className="stat-info">Aguardando pagamento</div>
-        </div>
-
-        <div className="stat-box patients-stat patients-stat-cyan">
-          <div className="stat-label">Total recebido</div>
-          <div className="stat-value">{formatarMoeda(totalRecebido)}</div>
-          <div className="stat-info">Pagamentos confirmados</div>
         </div>
       </div>
 
@@ -563,11 +610,12 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentos 
                     value={pagamento.formaPagamento}
                     onChange={handlePagamentoChange}
                   >
-                    <option>Dinheiro</option>
-                    <option>Pix</option>
-                    <option>Cartão de Débito</option>
-                    <option>Cartão de Crédito</option>
-                    <option>Convênio</option>
+                    <option value="">Selecione a forma</option>
+                    <option value="Dinheiro">Dinheiro</option>
+                    <option value="Pix">Pix</option>
+                    <option value="Cartão de Débito">Cartão de Débito</option>
+                    <option value="Cartão de Crédito">Cartão de Crédito</option>
+                    <option value="Convênio">Convênio</option>
                   </select>
                 </div>
 
@@ -579,10 +627,11 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentos 
                     value={pagamento.statusPagamento}
                     onChange={handlePagamentoChange}
                   >
-                    <option>Pago</option>
-                    <option>Pendente</option>
-                    <option>Cancelado</option>
-                    <option>Cortesia</option>
+                    <option value="">Selecione o status</option>
+                    <option value="Pago">Pago</option>
+                    <option value="Pendente">Pendente</option>
+                    <option value="Cancelado">Cancelado</option>
+                    <option value="Cortesia">Cortesia</option>
                   </select>
                 </div>
 
@@ -613,7 +662,13 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentos 
                 <button
                   onClick={salvarPagamento}
                   className="primary-btn"
-                  disabled={salvandoPagamento}
+                  disabled={
+                    salvandoPagamento ||
+                    !pagamento.valor ||
+                    Number(String(pagamento.valor).replace(",", ".")) <= 0 ||
+                    !pagamento.statusPagamento ||
+                    !pagamento.formaPagamento
+                  }
                 >
                   {salvandoPagamento ? "Salvando..." : "Salvar pagamento"}
                 </button>
@@ -682,11 +737,15 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentos 
                               {item.formaPagamento}
                             </span>
                           )}
+                          <span style={{ fontSize: "10px", color: "#cbd5e1", fontFamily: "monospace" }}>
+                            #{item.id}
+                            {item.atendimentoId ? ` · At.${item.atendimentoId}` : ""}
+                          </span>
                         </div>
                       </div>
                       <div style={{ textAlign: "right" }}>
                         <div style={{ fontWeight: 700, fontSize: "15px", color: statusNorm === "pago" ? "#16a34a" : statusNorm === "cortesia" ? "#0891b2" : "var(--text)" }}>
-                          {formatarMoeda(item.valor || item.valorFinal || 0)}
+                          {formatarMoeda(item.valorFinal > 0 ? item.valorFinal : Math.max(Number(item.valor || 0) - Number(item.desconto || 0), 0))}
                         </div>
                       </div>
                     </div>
@@ -743,7 +802,7 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentos 
               <h4 className="patients-section-title">Fila para pagamento</h4>
 
               <div style={{ display: "grid", gap: "10px", marginTop: "12px" }}>
-                {atendimentosDoDia.slice(0, 5).map((item) => (
+                {atendimentosDoDia.slice(0, 8).map((item) => (
                   <button
                     key={item.id}
                     className="secondary-btn"
@@ -752,11 +811,26 @@ export default function Pagamentos({ pacientes = [], consultas = [], pagamentos 
                       textAlign: "left",
                       justifyContent: "flex-start",
                       whiteSpace: "normal",
+                      borderColor: item._atrasado ? "#fca5a5" : undefined,
+                      background: item._atrasado ? "#fff5f5" : undefined,
                     }}
                     onClick={() => selecionarAtendimentoPagamento(item.id)}
                   >
-                    {(item.paciente || item.nomePaciente || "Paciente")} •{" "}
-                    {item.hora || "sem horário"}
+                    <span style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      {item._atrasado && (
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4,
+                          background: "#fee2e2", color: "#dc2626", flexShrink: 0,
+                        }}>
+                          Atrasado
+                        </span>
+                      )}
+                      <span>
+                        {(item.paciente || item.nomePaciente || "Paciente")}
+                        {item.data ? ` • ${item.data}` : ""}
+                        {item.hora ? ` ${item.hora}` : ""}
+                      </span>
+                    </span>
                   </button>
                 ))}
 

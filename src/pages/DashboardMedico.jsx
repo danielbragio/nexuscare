@@ -1,9 +1,5 @@
 import { useMemo } from "react";
-
-function hojeISO() {
-  const a = new Date();
-  return `${a.getFullYear()}-${String(a.getMonth() + 1).padStart(2, "0")}-${String(a.getDate()).padStart(2, "0")}`;
-}
+import { hojeISO } from "../utils/dateUtils";
 
 const STATUS_CFG = {
   agendado:       { label: "Aguardando",     dot: "#f59e0b", bg: "#fffbeb", chip: "#fbbf24" },

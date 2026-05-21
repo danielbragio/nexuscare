@@ -1,6 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertCircle, AlertTriangle, Building2, CheckCircle, ClipboardList, Clock, DollarSign, MapPin, Package, X } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
+import { useToast } from "../context/ToastContext";
 import api from "../services/api";
+import { formatarData } from "../utils/dateUtils";
+import EmptyState from "../components/EmptyState";
+import AlertaBanner from "../components/AlertaBanner";
 
 const CATEGORIAS = [
   "Medicamento",
@@ -47,6 +52,9 @@ const MOV_INICIAL = {
   nomeItem: "",
 };
 
+const POR_PAGINA_ITENS = 25;
+const POR_PAGINA_MOV = 30;
+
 function statusItem(qtd, min) {
   const q = Number(qtd ?? 0);
   const m = Number(min ?? 0);
@@ -69,12 +77,6 @@ function formatarMoeda(v) {
   return Number(v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
-function formatarData(iso) {
-  if (!iso) return "—";
-  const [y, m, d] = iso.split("-");
-  return `${d}/${m}/${y}`;
-}
-
 function diasParaVencer(validade) {
   if (!validade) return null;
   return Math.round((new Date(validade + "T00:00:00") - new Date()) / 86400000);
@@ -86,44 +88,79 @@ function normText(s) {
 
 export default function Estoque({ estoque = [], onRefresh = () => {} }) {
   const { userData } = useAuth();
+  const toast = useToast();
   const [movimentacoes, setMovimentacoes] = useState([]);
+  const [movCarregadas, setMovCarregadas] = useState(false);
   const [aba, setAba] = useState("itens");
   const [busca, setBusca] = useState("");
   const [filtroCategoria, setFiltroCategoria] = useState("Todas");
   const [filtroStatus, setFiltroStatus] = useState("Todos");
+  const [paginaItens, setPaginaItens] = useState(1);
+  const [paginaMov, setPaginaMov] = useState(1);
   const [modalItem, setModalItem] = useState(false);
   const [itemEditando, setItemEditando] = useState(null);
   const [form, setForm] = useState(FORM_INICIAL);
   const [modalMov, setModalMov] = useState(false);
   const [movForm, setMovForm] = useState(MOV_INICIAL);
   const [salvando, setSalvando] = useState(false);
+  const [carregandoMov, setCarregandoMov] = useState(false);
   const [expandido, setExpandido] = useState(null);
+  // KPIs do estoque vindos do backend (fonte de verdade do "Valor em estoque" — Fase 5)
+  const [kpisBackend, setKpisBackend] = useState(null);
+
+  const recarregarKpis = useCallback(async () => {
+    try {
+      const r = await api.estoque.kpis();
+      if (r?.data) setKpisBackend(r.data);
+    } catch {
+      setKpisBackend(null);
+    }
+  }, []);
+
+  // Recarrega sempre que a lista de itens muda (criação/edição/exclusão/movimentação).
+  // useEffect dispara após cada onRefresh() — KPI fica sempre alinhado com o banco.
+  useEffect(() => {
+    let cancel = false;
+    api.estoque.kpis()
+      .then((r) => { if (!cancel && r?.data) setKpisBackend(r.data); })
+      .catch(() => { if (!cancel) setKpisBackend(null); });
+    return () => { cancel = true; };
+  }, [estoque]);
+
+  const carregarMovimentacoes = useCallback(async () => {
+    setCarregandoMov(true);
+    try {
+      const r = await api.estoque.listarMovimentacoes({ limit: 100 });
+      setMovimentacoes(r.data || []);
+      setMovCarregadas(true);
+    } catch { setMovimentacoes([]); }
+    finally { setCarregandoMov(false); }
+  }, []);
 
   useEffect(() => {
-    async function carregar() {
-      try {
-        const r = await api.estoque.listarMovimentacoes();
-        setMovimentacoes(r.data || []);
-      } catch { setMovimentacoes([]); }
-    }
-    carregar();
-    const t = setInterval(carregar, 30000);
-    return () => clearInterval(t);
-  }, []);
+    if (aba === "movimentacoes" && !movCarregadas) carregarMovimentacoes();
+  }, [aba, movCarregadas, carregarMovimentacoes]);
 
   const kpis = useMemo(() => {
     const criticos = estoque.filter((i) => statusItem(i.quantidade, i.minimo) === "critico");
     const alertas = estoque.filter((i) => statusItem(i.quantidade, i.minimo) === "alerta");
-    const valorTotal = estoque.reduce(
-      (acc, i) => acc + Number(i.quantidade || 0) * Number(i.precoUnitario || 0),
-      0
-    );
+    // Fonte de verdade do "Valor em estoque": backend (SUM(quantidade*preco_unitario) onde ativo=1).
+    // Fallback local SÓ quando o backend ainda não respondeu (kpisBackend === null);
+    // se o backend respondeu 0 legítimo, mostramos 0 — não vale calcular local divergente.
+    const valorBackend = Number(kpisBackend?.valor_em_estoque);
+    const backendRespondeu = kpisBackend !== null && Number.isFinite(valorBackend);
+    const valorTotal = backendRespondeu
+      ? valorBackend
+      : estoque.reduce(
+          (acc, i) => acc + Number(i.quantidade || 0) * Number(i.precoUnitario || i.preco_unitario || 0),
+          0
+        );
     const proximosVencer = estoque.filter((i) => {
       const d = diasParaVencer(i.validade);
       return d !== null && d >= 0 && d <= 30;
     });
     return { total: estoque.length, criticos, alertas, valorTotal, proximosVencer };
-  }, [estoque]);
+  }, [estoque, kpisBackend]);
 
   const itensFiltrados = useMemo(() => {
     const t = normText(busca);
@@ -152,6 +189,14 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
         return normText(a.nome).localeCompare(normText(b.nome));
       });
   }, [estoque, busca, filtroCategoria, filtroStatus]);
+
+  useEffect(() => { setPaginaItens(1); }, [busca, filtroCategoria, filtroStatus]);
+  useEffect(() => { setPaginaMov(1); }, [movimentacoes]);
+
+  const totalPaginasItens = Math.max(1, Math.ceil(itensFiltrados.length / POR_PAGINA_ITENS));
+  const itensPagina = itensFiltrados.slice((paginaItens - 1) * POR_PAGINA_ITENS, paginaItens * POR_PAGINA_ITENS);
+  const totalPaginasMov = Math.max(1, Math.ceil(movimentacoes.length / POR_PAGINA_MOV));
+  const movPagina = movimentacoes.slice((paginaMov - 1) * POR_PAGINA_MOV, paginaMov * POR_PAGINA_MOV);
 
   function handleForm(e) {
     const { name, value } = e.target;
@@ -183,9 +228,9 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
   }
 
   async function salvarItem() {
-    if (!form.nome.trim()) { alert("Informe o nome do item."); return; }
-    if (form.quantidade === "" || isNaN(Number(form.quantidade))) { alert("Informe a quantidade atual."); return; }
-    if (form.minimo === "" || isNaN(Number(form.minimo))) { alert("Informe o estoque mínimo."); return; }
+    if (!form.nome.trim()) { toast.warn("Informe o nome do item."); return; }
+    if (form.quantidade === "" || isNaN(Number(form.quantidade))) { toast.warn("Informe a quantidade atual."); return; }
+    if (form.minimo === "" || isNaN(Number(form.minimo))) { toast.warn("Informe o estoque mínimo."); return; }
     try {
       setSalvando(true);
       const dados = {
@@ -210,19 +255,19 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
       await onRefresh();
     } catch (e) {
       console.error(e);
-      alert("Erro ao salvar item.");
+      toast.error("Erro ao salvar item.");
     } finally {
       setSalvando(false);
     }
   }
 
   async function excluirItem(item) {
-    if (!window.confirm(`Excluir "${item.nome}" do estoque?`)) return;
+    if (!await toast.confirm(`Excluir "${item.nome}" do estoque?`)) return;
     try {
       await api.estoque.excluir(item.id);
       await onRefresh();
-    } catch (e) {
-      alert("Erro ao excluir item.");
+    } catch {
+      toast.error("Erro ao excluir item.");
     }
   }
 
@@ -233,11 +278,11 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
 
   async function salvarMovimentacao() {
     const qtd = Number(movForm.quantidade);
-    if (!qtd || qtd <= 0) { alert("Informe uma quantidade válida."); return; }
+    if (!qtd || qtd <= 0) { toast.warn("Informe uma quantidade válida."); return; }
     const item = estoque.find((i) => i.id === movForm.estoqueId);
-    if (!item) { alert("Item não encontrado."); return; }
+    if (!item) { toast.warn("Item não encontrado."); return; }
     if (movForm.tipo === "saida" && Number(item.quantidade || 0) - qtd < 0) {
-      alert("Quantidade resultante seria negativa. Verifique o valor informado.");
+      toast.warn("Quantidade resultante seria negativa. Verifique o valor informado.");
       return;
     }
     try {
@@ -251,9 +296,10 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
       });
       setModalMov(false);
       await onRefresh();
+      await carregarMovimentacoes();
     } catch (e) {
       console.error(e);
-      alert("Erro ao registrar movimentação.");
+      toast.error("Erro ao registrar movimentação.");
     } finally {
       setSalvando(false);
     }
@@ -368,10 +414,10 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
               background: k.bg,
               marginBottom: 4,
             }}>
-              <span style={{ fontSize: "18px", color: k.cor }}>
-                {k.label.includes("TOTAL") && !k.label.includes("VALOR") ? "📦" :
-                  k.label.includes("CRÍTI") ? "🚨" :
-                    k.label.includes("ALERTA") ? "⚠️" : "💰"}
+              <span style={{ color: k.cor, display: "flex", alignItems: "center" }}>
+                {k.label.includes("TOTAL") && !k.label.includes("VALOR") ? <Package size={18} /> :
+                  k.label.includes("CRÍTI") ? <AlertCircle size={18} /> :
+                    k.label.includes("ALERTA") ? <AlertTriangle size={18} /> : <DollarSign size={18} />}
               </span>
             </div>
             <span style={{ fontSize: "10px", fontWeight: 700, letterSpacing: ".06em", color: "#94a3b8", textTransform: "uppercase" }}>
@@ -394,7 +440,7 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
           padding: "14px 18px",
         }}>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
-            <span style={{ fontSize: "16px" }}>🚨</span>
+            <AlertCircle size={16} color="#dc2626" />
             <span style={{ fontWeight: 700, fontSize: "13px", color: "#dc2626" }}>
               {kpis.criticos.length} {kpis.criticos.length === 1 ? "item abaixo" : "itens abaixo"} do estoque mínimo — reposição necessária
             </span>
@@ -440,6 +486,24 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
           {aba === "itens" && (
             <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
 
+              {/* Alertas de estoque */}
+              {(kpis.criticos.length > 0 || kpis.proximosVencer.length > 0) && (
+                <AlertaBanner alertas={[
+                  ...(kpis.criticos.length > 0 ? [{
+                    tipo: "urgente",
+                    titulo: `${kpis.criticos.length} item(s) com estoque crítico`,
+                    detalhe: kpis.criticos.slice(0, 3).map((i) => i.nome).join(", ") + (kpis.criticos.length > 3 ? "..." : ""),
+                  }] : []),
+                  ...(kpis.proximosVencer.length > 0 ? [{
+                    tipo: "atencao",
+                    titulo: `${kpis.proximosVencer.length} item(s) com validade nos próximos 30 dias`,
+                    detalhe: kpis.proximosVencer.slice(0, 3).map((i) => i.nome).join(", ") + (kpis.proximosVencer.length > 3 ? "..." : ""),
+                    acao: "Ver validades",
+                    onAcao: () => setAba("validade"),
+                  }] : []),
+                ]} />
+              )}
+
               {/* Filtros */}
               <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
                 <input
@@ -476,23 +540,23 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
                 </select>
                 <span style={{ fontSize: "12px", color: "#94a3b8", whiteSpace: "nowrap" }}>
                   {itensFiltrados.length} de {estoque.length} itens
+                  {totalPaginasItens > 1 && ` · pág. ${paginaItens}/${totalPaginasItens}`}
                 </span>
               </div>
 
               {/* Lista de itens */}
               {itensFiltrados.length === 0 ? (
-                <div style={{ textAlign: "center", padding: "48px", color: "#94a3b8" }}>
-                  <div style={{ fontSize: "32px", marginBottom: "8px" }}>📦</div>
-                  <p style={{ margin: 0, fontWeight: 600 }}>Nenhum item encontrado</p>
-                  <p style={{ margin: "4px 0 0", fontSize: "13px" }}>
-                    {estoque.length === 0
-                      ? "Cadastre o primeiro item clicando em \"+ Novo Item\""
-                      : "Tente ajustar os filtros"}
-                  </p>
-                </div>
+                <EmptyState
+                  icon={<Package size={32} />}
+                  titulo="Nenhum item encontrado"
+                  descricao={estoque.length === 0 ? "Cadastre o primeiro item clicando em \"+ Novo Item\"." : "Tente ajustar os filtros de busca."}
+                  acao={estoque.length === 0 ? "+ Novo Item" : undefined}
+                  onAcao={estoque.length === 0 ? () => setModalItem(true) : undefined}
+                  cor="#7C3AED"
+                />
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                  {itensFiltrados.map((item) => {
+                  {itensPagina.map((item) => {
                     const st = statusItem(item.quantidade, item.minimo);
                     const badge = badgeInfo(st);
                     const dias = diasParaVencer(item.validade);
@@ -541,8 +605,8 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
                                 </span>
                               )}
                               {dias !== null && dias <= 30 && (
-                                <span style={{ fontSize: "11px", color: dias <= 7 ? "#dc2626" : "#d97706", fontWeight: 600 }}>
-                                  ⏰ Vence em {dias}d
+                                <span style={{ display: "flex", alignItems: "center", gap: "3px", fontSize: "11px", color: dias <= 7 ? "#dc2626" : "#d97706", fontWeight: 600 }}>
+                                  <Clock size={11} />Vence em {dias}d
                                 </span>
                               )}
                             </div>
@@ -553,10 +617,10 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
                                 </strong> {item.unidade || "un"} · mín. {item.minimo}
                               </span>
                               {item.localizacao && (
-                                <span style={{ fontSize: "12px", color: "#94a3b8" }}>📍 {item.localizacao}</span>
+                                <span style={{ display: "flex", alignItems: "center", gap: "3px", fontSize: "12px", color: "#94a3b8" }}><MapPin size={11} />{item.localizacao}</span>
                               )}
                               {item.fornecedor && (
-                                <span style={{ fontSize: "12px", color: "#94a3b8" }}>🏭 {item.fornecedor}</span>
+                                <span style={{ display: "flex", alignItems: "center", gap: "3px", fontSize: "12px", color: "#94a3b8" }}><Building2 size={11} />{item.fornecedor}</span>
                               )}
                             </div>
                             {/* Progress bar */}
@@ -590,7 +654,7 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
                             <button
                               onClick={() => excluirItem(item)}
                               style={btnAcao("#fef2f2", "#dc2626")}
-                            >✕</button>
+                            ><X size={13} /></button>
                           </div>
                         </div>
 
@@ -624,6 +688,25 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
                   })}
                 </div>
               )}
+
+              {/* Paginação itens */}
+              {totalPaginasItens > 1 && (
+                <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: "10px", paddingTop: "8px" }}>
+                  <button
+                    onClick={() => setPaginaItens((p) => Math.max(1, p - 1))}
+                    disabled={paginaItens === 1}
+                    style={{ padding: "5px 12px", borderRadius: "7px", border: "1px solid #e2e8f0", background: paginaItens === 1 ? "#f8fafc" : "#fff", color: paginaItens === 1 ? "#cbd5e1" : "#374151", fontWeight: 600, fontSize: "12px", cursor: paginaItens === 1 ? "default" : "pointer" }}
+                  >Anterior</button>
+                  <span style={{ fontSize: "12px", color: "#64748b" }}>
+                    Página {paginaItens} de {totalPaginasItens} · {itensPagina.length} de {itensFiltrados.length} itens
+                  </span>
+                  <button
+                    onClick={() => setPaginaItens((p) => Math.min(totalPaginasItens, p + 1))}
+                    disabled={paginaItens === totalPaginasItens}
+                    style={{ padding: "5px 12px", borderRadius: "7px", border: "1px solid #e2e8f0", background: paginaItens === totalPaginasItens ? "#f8fafc" : "#fff", color: paginaItens === totalPaginasItens ? "#cbd5e1" : "#374151", fontWeight: 600, fontSize: "12px", cursor: paginaItens === totalPaginasItens ? "default" : "pointer" }}
+                  >Próxima</button>
+                </div>
+              )}
             </div>
           )}
 
@@ -633,31 +716,36 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
                 <span style={{ fontWeight: 700, fontSize: "14px", color: "#0f172a" }}>
                   Histórico de movimentações
+                  {movimentacoes.length > 0 && (
+                    <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 400, color: "#94a3b8" }}>
+                      ({movimentacoes.length} registros · últimos 100)
+                    </span>
+                  )}
                 </span>
-                <button
-                  onClick={() => setModalMov(true)}
-                  style={{
-                    padding: "7px 14px",
-                    borderRadius: "8px",
-                    border: "none",
-                    background: "#0f172a",
-                    color: "#fff",
-                    fontWeight: 600,
-                    fontSize: "12px",
-                    cursor: "pointer",
-                  }}
-                >
-                  + Movimentação manual
-                </button>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    onClick={carregarMovimentacoes}
+                    disabled={carregandoMov}
+                    title="Atualizar lista"
+                    style={{ padding: "7px 12px", borderRadius: "8px", border: "1px solid #e2e8f0", background: carregandoMov ? "#f8fafc" : "#fff", color: carregandoMov ? "#94a3b8" : "#374151", fontWeight: 600, fontSize: "12px", cursor: carregandoMov ? "default" : "pointer" }}
+                  >{carregandoMov ? "..." : "↻ Atualizar"}</button>
+                  <button
+                    onClick={() => setModalMov(true)}
+                    style={{ padding: "7px 14px", borderRadius: "8px", border: "none", background: "#0f172a", color: "#fff", fontWeight: 600, fontSize: "12px", cursor: "pointer" }}
+                  >+ Movimentação manual</button>
+                </div>
               </div>
 
-              {movimentacoes.length === 0 ? (
-                <div style={{ textAlign: "center", padding: "48px", color: "#94a3b8" }}>
-                  <div style={{ fontSize: "32px", marginBottom: "8px" }}>📋</div>
-                  <p style={{ margin: 0 }}>Nenhuma movimentação registrada</p>
+              {carregandoMov ? (
+                <div style={{ textAlign: "center", padding: "32px", color: "#94a3b8", fontSize: 13 }}>Carregando movimentações...</div>
+              ) : movimentacoes.length === 0 ? (
+                <div style={{ textAlign: "center", padding: "48px 24px", background: "#f9fafb", borderRadius: 12, border: "1px dashed #d1d5db" }}>
+                  <ClipboardList size={36} color="#cbd5e1" style={{ marginBottom: "8px" }} />
+                  <div style={{ fontWeight: 700, fontSize: 14, color: "#374151", marginBottom: 6 }}>Nenhuma movimentação registrada</div>
+                  <div style={{ fontSize: 12, color: "#9ca3af" }}>As movimentações aparecem aqui ao registrar entradas e saídas de estoque.</div>
                 </div>
               ) : (
-                movimentacoes.slice(0, 50).map((m) => {
+                movPagina.map((m) => {
                   const tipoInfo = {
                     entrada: { cor: "#16a34a", bg: "#f0fdf4", icone: "↑", label: "Entrada" },
                     saida: { cor: "#dc2626", bg: "#fef2f2", icone: "↓", label: "Saída" },
@@ -713,6 +801,25 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
                   );
                 })
               )}
+
+              {/* Paginação movimentações */}
+              {totalPaginasMov > 1 && (
+                <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: "10px", paddingTop: "4px" }}>
+                  <button
+                    onClick={() => setPaginaMov((p) => Math.max(1, p - 1))}
+                    disabled={paginaMov === 1}
+                    style={{ padding: "5px 12px", borderRadius: "7px", border: "1px solid #e2e8f0", background: paginaMov === 1 ? "#f8fafc" : "#fff", color: paginaMov === 1 ? "#cbd5e1" : "#374151", fontWeight: 600, fontSize: "12px", cursor: paginaMov === 1 ? "default" : "pointer" }}
+                  >Anterior</button>
+                  <span style={{ fontSize: "12px", color: "#64748b" }}>
+                    Página {paginaMov} de {totalPaginasMov} · {movPagina.length} de {movimentacoes.length} registros
+                  </span>
+                  <button
+                    onClick={() => setPaginaMov((p) => Math.min(totalPaginasMov, p + 1))}
+                    disabled={paginaMov === totalPaginasMov}
+                    style={{ padding: "5px 12px", borderRadius: "7px", border: "1px solid #e2e8f0", background: paginaMov === totalPaginasMov ? "#f8fafc" : "#fff", color: paginaMov === totalPaginasMov ? "#cbd5e1" : "#374151", fontWeight: 600, fontSize: "12px", cursor: paginaMov === totalPaginasMov ? "default" : "pointer" }}
+                  >Próxima</button>
+                </div>
+              )}
             </div>
           )}
 
@@ -723,10 +830,12 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
                 Itens com vencimento nos próximos 30 dias
               </span>
               {kpis.proximosVencer.length === 0 ? (
-                <div style={{ textAlign: "center", padding: "48px", color: "#94a3b8" }}>
-                  <div style={{ fontSize: "32px", marginBottom: "8px" }}>✅</div>
-                  <p style={{ margin: 0 }}>Nenhum item com vencimento próximo</p>
-                </div>
+                <EmptyState
+                  icon={<CheckCircle size={32} />}
+                  titulo="Nenhum item com vencimento próximo"
+                  descricao="Todos os itens em estoque têm validade superior a 30 dias."
+                  cor="#16a34a"
+                />
               ) : (
                 kpis.proximosVencer
                   .sort((a, b) => new Date(a.validade) - new Date(b.validade))
@@ -743,7 +852,7 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
                         background: urgente ? "#fef2f2" : "#fffbeb",
                         border: `1px solid ${urgente ? "#fecaca" : "#fde68a"}`,
                       }}>
-                        <span style={{ fontSize: "20px" }}>{urgente ? "🚨" : "⏰"}</span>
+                        <span style={{ color: urgente ? "#dc2626" : "#d97706", display: "flex" }}>{urgente ? <AlertCircle size={20} /> : <Clock size={20} />}</span>
                         <div style={{ flex: 1 }}>
                           <div style={{ fontWeight: 600, fontSize: "13px", color: "#0f172a" }}>{item.nome}</div>
                           <div style={{ fontSize: "12px", color: "#64748b" }}>
@@ -847,8 +956,8 @@ export default function Estoque({ estoque = [], onRefresh = () => {} }) {
               </Campo>
             )}
             {movForm.nomeItem && (
-              <div style={{ padding: "10px 14px", borderRadius: "8px", background: "#f8fafc", border: "1px solid #e2e8f0", fontSize: "13px", fontWeight: 600, color: "#0f172a" }}>
-                📦 {movForm.nomeItem}
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "10px 14px", borderRadius: "8px", background: "#f8fafc", border: "1px solid #e2e8f0", fontSize: "13px", fontWeight: 600, color: "#0f172a" }}>
+                <Package size={14} />{movForm.nomeItem}
               </div>
             )}
             <Campo label="Tipo de movimentação">

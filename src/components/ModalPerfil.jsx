@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import api from "../services/api";
 
@@ -11,6 +11,10 @@ export default function ModalPerfil({ userData, onClose }) {
   const [confirmarSenha, setConfirmarSenha] = useState("");
   const [salvandoSenha, setSalvandoSenha] = useState(false);
   const [msgSenha, setMsgSenha]           = useState(null);
+
+  const [uploadandoFoto, setUploadandoFoto] = useState(false);
+  const [msgFoto, setMsgFoto]               = useState(null);
+  const fileInputRef                         = useRef(null);
 
   const nomeExibicao = userData?.nome || userData?.email || "Usuário";
   const inicial = nomeExibicao.charAt(0).toUpperCase();
@@ -67,6 +71,23 @@ export default function ModalPerfil({ userData, onClose }) {
     }
   }
 
+  async function trocarFoto(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setMsgFoto(null);
+    setUploadandoFoto(true);
+    try {
+      await api.usuarios.uploadFoto(userData.id, file);
+      await refreshUserData();
+      setMsgFoto({ tipo: "sucesso", texto: "Foto atualizada com sucesso!" });
+    } catch (err) {
+      setMsgFoto({ tipo: "erro", texto: err.message || "Não foi possível enviar a foto." });
+    } finally {
+      setUploadandoFoto(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
   const infoRows = [
     { label: "Nome",           value: userData?.nome || "—" },
     { label: "E-mail",         value: userData?.email || "—" },
@@ -75,6 +96,7 @@ export default function ModalPerfil({ userData, onClose }) {
     { label: "Cargo",          value: userData?.cargo || null },
     { label: "Especialidade",  value: userData?.especialidade || null },
     { label: "CRM",            value: userData?.crm || null },
+    { label: "CRO",            value: userData?.cro || null },
     { label: "COREN",          value: userData?.coren || null },
     { label: "Telefone",       value: userData?.telefone || null },
     { label: "Cadastrado em",  value: formatarData(userData?.createdAt) },
@@ -108,7 +130,7 @@ export default function ModalPerfil({ userData, onClose }) {
         {/* Header */}
         <div
           style={{
-            background: "linear-gradient(135deg, #0C2218 0%, #1F7A63 100%)",
+            background: "linear-gradient(135deg, #1E1B4B 0%, #7C3AED 100%)",
             padding: "22px 24px",
             display: "flex",
             alignItems: "center",
@@ -169,8 +191,8 @@ export default function ModalPerfil({ userData, onClose }) {
                 padding: "12px 16px",
                 background: "none",
                 border: "none",
-                borderBottom: aba === tab.key ? "2px solid #1F7A63" : "2px solid transparent",
-                color: aba === tab.key ? "#1F7A63" : "#64748b",
+                borderBottom: aba === tab.key ? "2px solid #7C3AED" : "2px solid transparent",
+                color: aba === tab.key ? "#7C3AED" : "#64748b",
                 fontWeight: aba === tab.key ? 700 : 400,
                 fontSize: "13px",
                 cursor: "pointer",
@@ -198,6 +220,55 @@ export default function ModalPerfil({ userData, onClose }) {
                   </span>
                 </div>
               ))}
+
+              {/* Foto de perfil */}
+              <div style={{ marginTop: 8, padding: "12px 14px", background: "#f8fafc", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                <p style={{ margin: "0 0 8px", fontSize: 12, color: "#64748b", fontWeight: 600 }}>Foto de perfil</p>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{
+                    width: 48, height: 48, borderRadius: "50%",
+                    background: "#e2e8f0", border: "2px solid #cbd5e1",
+                    overflow: "hidden", flexShrink: 0,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 20, fontWeight: 700, color: "#64748b",
+                  }}>
+                    {userData?.photoURL
+                      ? <img src={userData.photoURL} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      : inicial}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/gif,image/webp"
+                      onChange={trocarFoto}
+                      style={{ display: "none" }}
+                    />
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploadandoFoto}
+                      style={{
+                        padding: "7px 14px", borderRadius: 7, border: "1px solid #cbd5e1",
+                        background: "#fff", cursor: uploadandoFoto ? "not-allowed" : "pointer",
+                        fontSize: 12, fontWeight: 600, color: "#374151",
+                      }}
+                    >
+                      {uploadandoFoto ? "Enviando…" : "Alterar foto"}
+                    </button>
+                    <p style={{ margin: "4px 0 0", fontSize: 11, color: "#94a3b8" }}>JPEG, PNG, GIF ou WEBP · máx. 5 MB</p>
+                  </div>
+                </div>
+                {msgFoto && (
+                  <div style={{
+                    marginTop: 8, padding: "7px 10px", borderRadius: 6, fontSize: 12,
+                    background: msgFoto.tipo === "sucesso" ? "#f0fdf4" : "#fef2f2",
+                    color: msgFoto.tipo === "sucesso" ? "#15803d" : "#dc2626",
+                    border: `1px solid ${msgFoto.tipo === "sucesso" ? "#bbf7d0" : "#fecaca"}`,
+                  }}>
+                    {msgFoto.tipo === "sucesso" ? "✓ " : "⚠ "}{msgFoto.texto}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

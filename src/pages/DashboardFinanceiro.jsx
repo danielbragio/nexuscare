@@ -1,12 +1,11 @@
 import { useMemo } from "react";
+import { hojeISO } from "../utils/dateUtils";
+import {
+  isFaturamentoConfirmado,
+  isPagamentoPendente,
+  valorCanonicoPagamento,
+} from "../utils/financeUtils";
 
-function hojeISO() {
-  const a = new Date();
-  return `${a.getFullYear()}-${String(a.getMonth() + 1).padStart(2, "0")}-${String(a.getDate()).padStart(2, "0")}`;
-}
-function normalizarTexto(v) {
-  return String(v || "").trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
-}
 function formatarMoeda(v) {
   return Number(v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
@@ -54,15 +53,14 @@ export default function DashboardFinanceiro({
     let pendentesQtd = 0;
 
     pagamentos.forEach((p) => {
-      const status = normalizarTexto(p.statusPagamento || p.status || "");
-      const valor = Number(p.valor || 0);
       const dataPag = String(p.dataPagamento || p.data || "");
+      const valor = valorCanonicoPagamento(p);
 
-      if (status === "pago") {
+      if (isFaturamentoConfirmado(p)) {
         if (dataPag.startsWith(hoje)) receitaHoje += valor;
         if (dataPag.startsWith(mesAtual)) receitaMes += valor;
       }
-      if (status === "pendente") {
+      if (isPagamentoPendente(p)) {
         pendentesValor += valor;
         pendentesQtd++;
       }
@@ -81,21 +79,21 @@ export default function DashboardFinanceiro({
       const valor = pagamentos
         .filter(
           (p) =>
-            normalizarTexto(p.statusPagamento || p.status || "") === "pago" &&
+            isFaturamentoConfirmado(p) &&
             String(p.dataPagamento || p.data || "").startsWith(iso)
         )
-        .reduce((acc, p) => acc + Number(p.valor || 0), 0);
+        .reduce((acc, p) => acc + valorCanonicoPagamento(p), 0);
       return { data: iso, label, valor, isHoje: i === 6 };
     });
   }, [pagamentos]);
 
   const ultimosPagamentos = useMemo(
-    () => pagamentos.filter((p) => normalizarTexto(p.statusPagamento || p.status || "") === "pago").slice(0, 6),
+    () => pagamentos.filter(isFaturamentoConfirmado).slice(0, 6),
     [pagamentos]
   );
 
   const pendentes = useMemo(
-    () => pagamentos.filter((p) => normalizarTexto(p.statusPagamento || p.status || "") === "pendente").slice(0, 5),
+    () => pagamentos.filter(isPagamentoPendente).slice(0, 5),
     [pagamentos]
   );
 

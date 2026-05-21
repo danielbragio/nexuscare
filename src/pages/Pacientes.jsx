@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import api from "../services/api";
 import { useAuth } from "../context/AuthContext";
+import { useToast } from "../context/ToastContext";
+import { hojeISO } from "../utils/dateUtils";
+import { validarCPF, validarTelefone, mascaraCPF as mascaraCPFInput, mascaraTelefone as mascaraTelInput } from "../utils/validacoes";
 import {
   ESPECIALIDADES_MEDICO,
   ESPECIALIDADES_ODONTO,
@@ -13,6 +16,21 @@ function normalizarTexto(valor) {
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
+}
+
+function mascaraCPF(cpf) {
+  if (!cpf) return "\u2014";
+  const c = String(cpf).replace(/\D/g, "");
+  if (c.length !== 11) return cpf;
+  return `***.${c.slice(3, 6)}.${c.slice(6, 9)}-**`;
+}
+
+function mascaraTelefone(tel) {
+  if (!tel) return "\u2014";
+  const t = String(tel).replace(/\D/g, "");
+  if (t.length === 11) return `(${t.slice(0, 2)}) *****-${t.slice(7)}`;
+  if (t.length === 10) return `(${t.slice(0, 2)}) ****-${t.slice(6)}`;
+  return tel;
 }
 
 function normalizarHora(valor) {
@@ -510,21 +528,77 @@ function EspecialidadeCombobox({ value, onChange }) {
   );
 }
 
+// ── Modal de remarcação (usado no Check-in) ───────────────────────────────────
+function ModalRemarcarCheckin({ ag, onSalvar, onFechar }) {
+  const hoje = hojeISO();
+  const [data, setData] = useState(ag.data || hoje);
+  const [hora, setHora] = useState(ag.hora ? String(ag.hora).slice(0, 5) : "");
+  const [salvando, setSalvando] = useState(false);
+  const inp = { width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #d1d5db", fontSize: 14, outline: "none", boxSizing: "border-box" };
+  async function salvar() {
+    if (!data) return;
+    setSalvando(true);
+    try { await onSalvar(data, hora); } finally { setSalvando(false); }
+  }
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10001 }}>
+      <div style={{ background: "#fff", borderRadius: 12, width: "min(380px,92vw)", padding: 24, boxShadow: "0 20px 60px rgba(0,0,0,.3)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "#111827" }}>Remarcar agendamento</h3>
+          <button onClick={onFechar} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: "#9ca3af" }}>✕</button>
+        </div>
+        <div style={{ background: "#f9fafb", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "#374151" }}>
+          <strong>{ag.paciente || ag.pacienteNome || ag.nomePaciente}</strong>
+          {ag.hora && <span> · {String(ag.hora).slice(0, 5)}</span>}
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 18 }}>
+          <div>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 4, color: "#374151" }}>Nova data *</label>
+            <input type="date" value={data} min={hoje} onChange={(e) => setData(e.target.value)} style={inp} />
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 4, color: "#374151" }}>Novo horário</label>
+            <input type="time" value={hora} onChange={(e) => setHora(e.target.value)} style={inp} />
+          </div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={onFechar} style={{ padding: "8px 18px", borderRadius: 8, border: "1px solid #d1d5db", background: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#374151" }}>
+            Cancelar
+          </button>
+          <button onClick={salvar} disabled={!data || salvando} style={{ padding: "8px 18px", borderRadius: 8, border: "none", background: "#2563eb", color: "#fff", cursor: (!data || salvando) ? "not-allowed" : "pointer", opacity: (!data || salvando) ? 0.7 : 1, fontSize: 13, fontWeight: 600 }}>
+            {salvando ? "Salvando…" : "Confirmar remarcação"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Pacientes({
   pacientes = [],
   consultas = [],
+  agendamentosOdonto = [],
   procedimentosOdonto = [],
   users = [],
   onAdicionarPaciente,
+  onAtualizarPaciente,
   onAdicionarConsulta,
   onEncaminharParaPagamento,
+  onAtualizarConsulta,
+  onAtualizarAgendamentoOdonto,
+  onRefreshAgendamentosOdonto,
 }) {
   const { userData } = useAuth();
+  const toast = useToast();
 
   const [abaAtiva, setAbaAtiva] = useState("cadastro");
   const [buscaCadastro, setBuscaCadastro] = useState("");
+  const [pacienteId, setPacienteId] = useState(null);
   const [salvandoPaciente, setSalvandoPaciente] = useState(false);
   const [salvandoConsulta, setSalvandoConsulta] = useState(false);
+  const [confirmandoCheckin, setConfirmandoCheckin] = useState(null);
+  const [buscaCheckin, setBuscaCheckin] = useState("");
+  const [remarcarCheckin, setRemarcarCheckin] = useState(null);
 
   const [paginaBusca, setPaginaBusca] = useState(1);
   const itensPorPagina = 8;
@@ -543,6 +617,7 @@ export default function Pacientes({
     pai: "",
     endereco: "",
     rua: "",
+    bairro: "",
     cep: "",
     convenio: "Particular",
     status: "Ativo",
@@ -554,10 +629,14 @@ export default function Pacientes({
   const [buscaProcedimentos, setBuscaProcedimentos] = useState("");
   const [mostrarProcedimentos, setMostrarProcedimentos] = useState(false);
   const [profissionaisOdonto, setProfissionaisOdonto] = useState([]);
+  const [modalExclusao, setModalExclusao] = useState(null); // { paciente, etapa: 'senha'|'motivo', senha, motivo, processando }
+  const [modalDataFutura, setModalDataFutura] = useState(null); // { motivo, payload } aguarda confirmação do usuário
+
   const [carregandoProfissionaisOdonto, setCarregandoProfissionaisOdonto] = useState(false);
   const [profissionalOdontoId, setProfissionalOdontoId] = useState("");
   const [profissionalOdontoNome, setProfissionalOdontoNome] = useState("");
   const [horaOdonto, setHoraOdonto] = useState("");
+  const [horariosDisponiveisOdonto, setHorariosDisponiveisOdonto] = useState([]);
 
   const [agendamento, setAgendamento] = useState({
     nomePaciente: "",
@@ -583,9 +662,11 @@ export default function Pacientes({
 
   useEffect(() => {
     if (!isOdonto) {
-      carregarProfissionaisDisponiveis(agendamento.data, especialidadeSelecionada);
+      const isImediato = agendamento.tipoAtendimento === "Atendimento Imediato";
+      carregarProfissionaisDisponiveis(agendamento.data, especialidadeSelecionada, isImediato);
     }
-  }, [agendamento.data, consultas, especialidadeSelecionada]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- carregarProfissionaisDisponiveis is a stable sync function; isOdonto derives from especialidadeSelecionada which is in deps
+  }, [agendamento.data, agendamento.tipoAtendimento, consultas, especialidadeSelecionada]);
 
   function carregarProfissionaisOdonto(espFiltro = "") {
     setCarregandoProfissionaisOdonto(true);
@@ -608,8 +689,32 @@ export default function Pacientes({
     }
   }
 
-  function carregarProfissionaisDisponiveis(dataSelecionada, espFiltro = "") {
-    if (!dataSelecionada) {
+  function computarHorariosOdonto(profId, data) {
+    if (!profId || !data) return [];
+    const prof = profissionaisOdonto.find((p) => String(p.id || p.uid) === String(profId));
+    if (!prof) return [];
+    const diaSemana = obterDiaSemana(data);
+    const horariosCadastrados = diaSemana ? obterHorariosDoProfissional(prof, diaSemana) : [];
+    const horariosBase =
+      horariosCadastrados.length > 0
+        ? horariosCadastrados
+        : gerarHorariosPorIntervalo("08:00", "18:00", prof.intervalo_minutos || prof.intervalo || 30);
+    const horariosOcupados = agendamentosOdonto
+      .filter((a) => {
+        if (a.data !== data) return false;
+        const s = (a.status || "").toLowerCase();
+        if (["finalizado", "cancelado", "faltou"].includes(s)) return false;
+        const aId = String(a.profissionalId || "");
+        const aNome = normalizarTexto(a.profissionalNome || "");
+        const profNome = normalizarTexto(obterNomeProfissional(prof));
+        return aId === String(profId) || aNome === profNome;
+      })
+      .map((a) => normalizarHora(a.hora));
+    return horariosBase.filter((h) => h && !horariosOcupados.includes(h));
+  }
+
+  function carregarProfissionaisDisponiveis(dataSelecionada, espFiltro = "", imediato = false) {
+    if (!dataSelecionada && !imediato) {
       setProfissionaisDisponiveis([]);
       setHorariosDisponiveis([]);
       setAgendamento((prev) => ({
@@ -625,36 +730,62 @@ export default function Pacientes({
     try {
       setCarregandoProfissionais(true);
 
-      const diaSemana = obterDiaSemana(dataSelecionada);
-
       const profissionais = users.filter((u) => u.ativo !== false);
 
-      const disponiveis = profissionais
-        .filter(profissionalEhAssistencial)
-        .filter((profissional) => profissionalTemEspecialidade(profissional, espFiltro))
-        .filter((profissional) => possuiAgendaNoDia(profissional, diaSemana))
-        .map((profissional) => {
-          const horariosCadastrados = obterHorariosDoProfissional(profissional, diaSemana);
-
-          const horariosOcupados = consultas
-            .filter((consulta) => consulta.data === dataSelecionada)
-            .filter(consultaOcupaHorario)
-            .filter((consulta) => consultaPertenceAoProfissional(consulta, profissional))
-            .map((consulta) => normalizarHora(consulta.hora));
-
-          const horariosLivres = horariosCadastrados.filter(
-            (hora) => hora && !horariosOcupados.includes(hora)
-          );
-
-          return {
+      let disponiveis;
+      if (imediato) {
+        disponiveis = profissionais
+          .filter(profissionalEhAssistencial)
+          .filter((profissional) => profissionalTemEspecialidade(profissional, espFiltro))
+          .map((profissional) => ({
             ...profissional,
             nomeExibicao: obterNomeProfissional(profissional),
-            horariosLivres,
-            totalHorariosLivres: horariosLivres.length,
-          };
-        })
-        .filter((profissional) => profissional.totalHorariosLivres > 0)
-        .sort((a, b) => b.totalHorariosLivres - a.totalHorariosLivres);
+            horariosLivres: [],
+            totalHorariosLivres: 1,
+          }));
+      } else {
+        const diaSemana = obterDiaSemana(dataSelecionada);
+        disponiveis = profissionais
+          .filter(profissionalEhAssistencial)
+          .filter((profissional) => profissionalTemEspecialidade(profissional, espFiltro))
+          // Remove strict day-of-week filter: if no schedule is configured, professional is available any day
+          .filter((profissional) => {
+            // Has schedule config → respect configured days; no config → always available
+            const temAgenda = !!(
+              profissional.diasAtendimento || profissional.dias || profissional.diasAgenda ||
+              profissional.diasDisponiveis || profissional.diasDeAtendimento ||
+              profissional.agenda || profissional.agendaSemanal ||
+              profissional.horariosPorDia || profissional.disponibilidade
+            );
+            return !temAgenda || possuiAgendaNoDia(profissional, diaSemana);
+          })
+          .map((profissional) => {
+            const horariosCadastrados = obterHorariosDoProfissional(profissional, diaSemana);
+            // Fall back to default 08:00-18:00 every 30 min when no schedule configured
+            const horariosBase = horariosCadastrados.length > 0
+              ? horariosCadastrados
+              : gerarHorariosPorIntervalo("08:00", "18:00", 30);
+
+            const horariosOcupados = consultas
+              .filter((consulta) => consulta.data === dataSelecionada)
+              .filter(consultaOcupaHorario)
+              .filter((consulta) => consultaPertenceAoProfissional(consulta, profissional))
+              .map((consulta) => normalizarHora(consulta.hora));
+
+            const horariosLivres = horariosBase.filter(
+              (hora) => hora && !horariosOcupados.includes(hora)
+            );
+
+            return {
+              ...profissional,
+              nomeExibicao: obterNomeProfissional(profissional),
+              horariosLivres,
+              totalHorariosLivres: horariosLivres.length,
+            };
+          })
+          .filter((profissional) => profissional.totalHorariosLivres > 0)
+          .sort((a, b) => b.totalHorariosLivres - a.totalHorariosLivres);
+      }
 
       setProfissionaisDisponiveis(disponiveis);
 
@@ -701,16 +832,66 @@ export default function Pacientes({
 
   const idadeAtual = calcularIdade(form.dataNascimento);
 
+  const cpfDuplicado = useMemo(() => {
+    const limpo = form.cpf.replace(/\D/g, "");
+    if (limpo.length !== 11) return null;
+    return pacientes.find((p) => {
+      if (pacienteId && String(p.id) === String(pacienteId)) return false;
+      const pc = String(p.cpf || "").replace(/\D/g, "");
+      return pc.length === 11 && pc === limpo;
+    }) || null;
+  }, [form.cpf, pacientes, pacienteId]);
+
+  // Verificação de duplicata via API (captura CPFs fora da lista local paginada)
+  const [cpfApiNome, setCpfApiNome] = useState(null);
+  useEffect(() => {
+    const limpo = form.cpf.replace(/\D/g, "");
+    // In edit mode the local cpfDuplicado check already excludes the current patient —
+    // skip the API call to avoid the false "já cadastrado" warning for the patient's own CPF.
+    if (limpo.length !== 11 || cpfDuplicado || pacienteId) {
+      setCpfApiNome(null);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.pacientes.verificarDuplicata(limpo);
+        setCpfApiNome(res?.data?.duplicado ? (res.data.nome || "Paciente existente") : null);
+      } catch {
+        setCpfApiNome(null);
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [form.cpf, cpfDuplicado, pacienteId]);
+
   function handleChange(e) {
     const { name, value } = e.target;
-    setForm((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
+    let v = value;
+    if (name === "cpf") v = mascaraCPFInput(value);
+    if (name === "telefone") v = mascaraTelInput(value);
+    setForm((prev) => ({ ...prev, [name]: v }));
   }
 
   function handleAgendamentoChange(e) {
     const { name, value } = e.target;
+
+    if (name === "tipoAtendimento") {
+      const isImediato = value === "Atendimento Imediato";
+      const hoje = hojeISO();
+      setAgendamento((prev) => ({
+        ...prev,
+        tipoAtendimento: value,
+        data: isImediato ? hoje : prev.data,
+        medico: "",
+        medicoId: "",
+        medicoEmail: "",
+        hora: "",
+      }));
+      setHorariosDisponiveis([]);
+      if (isImediato && especialidadeSelecionada && !ESPECIALIDADES_ODONTO_EXCLUSIVAS.has(especialidadeSelecionada)) {
+        carregarProfissionaisDisponiveis(hoje, especialidadeSelecionada, true);
+      }
+      return;
+    }
 
     if (name === "data") {
       setAgendamento((prev) => ({
@@ -722,12 +903,21 @@ export default function Pacientes({
         hora: "",
       }));
       setHorariosDisponiveis([]);
+      if (ESPECIALIDADES_ODONTO_EXCLUSIVAS.has(especialidadeSelecionada)) {
+        setHoraOdonto("");
+        setHorariosDisponiveisOdonto(
+          profissionalOdontoId ? computarHorariosOdonto(profissionalOdontoId, value) : []
+        );
+      } else if (especialidadeSelecionada && value) {
+        const _isImediato = agendamento.tipoAtendimento === "Atendimento Imediato";
+        carregarProfissionaisDisponiveis(value, especialidadeSelecionada, _isImediato);
+      }
       return;
     }
 
     if (name === "medico") {
       const profissional = profissionaisDisponiveis.find(
-        (item) => obterIdProfissional(item) === value
+        (item) => String(obterIdProfissional(item)) === String(value)
       );
 
       setAgendamento((prev) => ({
@@ -761,12 +951,21 @@ export default function Pacientes({
     }));
     setProfissionalOdontoId("");
     setProfissionalOdontoNome("");
+    setHorariosDisponiveisOdonto([]);
+    setHoraOdonto("");
     setHorariosDisponiveis([]);
     setProfissionaisDisponiveis([]);
-    if (ESPECIALIDADES_ODONTO_EXCLUSIVAS.has(nova)) carregarProfissionaisOdonto();
+    if (ESPECIALIDADES_ODONTO_EXCLUSIVAS.has(nova)) {
+      carregarProfissionaisOdonto(nova);
+    } else if (agendamento.data) {
+      // Date already selected — load professionals immediately instead of waiting for useEffect
+      const _isImediato = agendamento.tipoAtendimento === "Atendimento Imediato";
+      carregarProfissionaisDisponiveis(agendamento.data, nova, _isImediato);
+    }
   }
 
   function limparFormulario() {
+    setPacienteId(null);
     setForm({
       nome: "",
       cpf: "",
@@ -777,6 +976,7 @@ export default function Pacientes({
       pai: "",
       endereco: "",
       rua: "",
+      bairro: "",
       cep: "",
       convenio: "Particular",
       status: "Ativo",
@@ -808,6 +1008,7 @@ export default function Pacientes({
     setProfissionalOdontoId("");
     setProfissionalOdontoNome("");
     setHoraOdonto("");
+    setHorariosDisponiveisOdonto([]);
   }
 
   function novoCadastro() {
@@ -831,55 +1032,84 @@ export default function Pacientes({
   }
 
   async function salvarPaciente() {
-    if (!form.nome || !form.cpf || !form.telefone) {
-      alert("Preencha nome, CPF e telefone.");
+    if (!form.nome || !form.telefone) {
+      toast.warn("Preencha nome e telefone.");
+      return;
+    }
+    if (form.cpf && !validarCPF(form.cpf)) {
+      toast.warn("CPF inválido. Verifique os dígitos informados.");
+      return;
+    }
+    if (!validarTelefone(form.telefone)) {
+      toast.warn("Telefone inválido. Use o formato (00) 00000-0000.");
       return;
     }
 
     try {
       setSalvandoPaciente(true);
-      await onAdicionarPaciente(form);
+      if (pacienteId) {
+        await onAtualizarPaciente(pacienteId, form);
+        setPacienteId(null);
+        toast.success("Paciente atualizado com sucesso.");
+      } else {
+        await onAdicionarPaciente(form);
+        toast.success("Paciente cadastrado com sucesso.");
+      }
       limparFormulario();
       setAbaAtiva("buscar");
-      alert("Paciente salvo com sucesso.");
     } catch (error) {
-      console.error("Erro ao salvar paciente:", error);
-      alert("Não foi possível salvar o paciente.");
+      // Erros de validação (400/409) são esperados — não logar como crítico
+      if (error.status && error.status < 500) {
+        const detalhe = error.data?.message || error.message || "Dados inválidos.";
+        toast.error(detalhe);
+      } else {
+        console.error("Erro ao salvar paciente:", error);
+        toast.error("Não foi possível salvar o paciente. Tente novamente.");
+      }
     } finally {
       setSalvandoPaciente(false);
     }
   }
 
-  async function registrarAtendimento() {
-    if (!agendamento.nomePaciente || !agendamento.data) {
-      alert("Preencha ao menos o nome do paciente e a data.");
+  async function registrarAtendimento(overrideMotivo = null) {
+    const _isImediato = agendamento.tipoAtendimento === "Atendimento Imediato";
+    const _hoje = hojeISO();
+    const _dataEfetiva = agendamento.data || (_isImediato ? _hoje : "");
+
+    if (!agendamento.nomePaciente || !_dataEfetiva) {
+      toast.warn("Preencha ao menos o nome do paciente e a data.");
+      return;
+    }
+
+    // ── Proteção de data futura ────────────────────────────────────────────
+    if (!_isImediato && _dataEfetiva > _hoje && !overrideMotivo) {
+      setModalDataFutura({ motivo: "" });
       return;
     }
 
     if (destinoAtendimento === "odonto") {
       if (!agendamento.nomePaciente.trim()) {
-        alert("Informe o nome do paciente.");
+        toast.warn("Informe o nome do paciente.");
         return;
       }
       if (!profissionalOdontoId) {
-        alert("Selecione o profissional odontológico antes de encaminhar.");
+        toast.warn("Selecione o profissional odontológico antes de encaminhar.");
         return;
       }
       try {
         setSalvandoConsulta(true);
-        const statusInicial =
-          agendamento.tipoAtendimento === "Atendimento Imediato" ? "aguardando" : "agendado";
+        const statusInicial = _isImediato ? "aguardando" : "agendado";
         const tipoAtend =
-          agendamento.tipoAtendimento === "Atendimento Imediato" ? "Consulta Imediata" : "Consulta";
+          _isImediato ? "Consulta Imediata" : "Consulta";
         const valorTotal = procedimentosSelecionadosOdonto.reduce(
           (acc, p) => acc + Number(p.valor || 0), 0
         );
         const descricaoProc =
           procedimentosSelecionadosOdonto.map((p) => p.nome).join(", ") ||
           "Atendimento odontológico";
-        const dataHoje = new Date().toISOString().split("T")[0];
+        const dataHoje = hojeISO();
 
-        // 1. Criar agendamento odonto via API MySQL
+        // 1. Criar agendamento odonto
         const agRes = await api.agendamentosOdonto.criar({
           paciente_nome:              agendamento.nomePaciente,
           profissional_nome:          profissionalOdontoNome || "",
@@ -893,52 +1123,96 @@ export default function Pacientes({
         });
         const agId = agRes?.data?.id;
 
-        // 2. Criar pagamento pendente vinculado via API MySQL
-        const pagRes = await api.pagamentos.criar({
-          nome_paciente:   agendamento.nomePaciente,
-          descricao:       descricaoProc,
-          servico:         "Odontologia",
-          valor:           valorTotal,
-          desconto:        0,
-          valor_final:     valorTotal,
-          status:          "pendente",
-          status_pagamento:"Pendente",
-          forma_pagamento: "",
-          tipo:            "odonto",
-          origem:          "odonto",
-          profissional:    profissionalOdontoNome || "",
-          data:            agendamento.data || dataHoje,
-          data_pagamento:  "",
-        });
-        const pagId = pagRes?.data?.id;
-
-        // 3. Vincular pagamentoId no agendamento
-        if (agId && pagId) {
-          await api.agendamentosOdonto.atualizar(agId, { pagamento_id: pagId });
-        }
-
-        limparAgendamento();
-        if (onEncaminharParaPagamento) {
-          onEncaminharParaPagamento({
-            pagamentoId:     pagId,
-            atendimentoId:   agId,
-            paciente:        agendamento.nomePaciente,
-            cpf:             agendamento.cpf || "",
-            telefone:        agendamento.telefone || "",
-            tipoAtendimento: `Odontologia — ${tipoAtend}`,
-            profissional:    profissionalOdontoNome || "",
-            valor:           valorTotal,
+        if (_isImediato) {
+          const confirmacao = await api.agendamentosOdonto.confirmarChegada(agId, { status: "aguardando" });
+          const pagId = confirmacao?.data?.pagamento?.id;
+          limparAgendamento();
+          if (onEncaminharParaPagamento) {
+            onEncaminharParaPagamento({
+              pagamentoId:     pagId,
+              atendimentoId:   confirmacao?.data?.atendimento?.id || agId,
+              paciente:        agendamento.nomePaciente,
+              cpf:             agendamento.cpf || "",
+              telefone:        agendamento.telefone || "",
+              tipoAtendimento: `Odontologia - ${tipoAtend}`,
+              profissional:    profissionalOdontoNome || "",
+              valor:           valorTotal,
+              descricao:       descricaoProc,
+              tipo:            "odonto",
+            });
+          } else {
+            toast.success("Paciente encaminhado para Odontologia. Cobrança pendente registrada em Pagamentos.");
+          }
+          await onRefreshAgendamentosOdonto?.();
+          return;
+          /*
+          // Imediato: paciente já está aqui — criar pagamento pendente + atendimento
+          const pagRes = await api.pagamentos.criar({
+            nome_paciente:   agendamento.nomePaciente,
             descricao:       descricaoProc,
+            servico:         "Odontologia",
+            valor:           valorTotal,
+            desconto:        0,
+            valor_final:     valorTotal,
+            status:          "pendente",
+            status_pagamento:"pendente",
+            forma_pagamento: "",
             tipo:            "odonto",
+            origem:          "odonto",
+            profissional:    profissionalOdontoNome || "",
+            data:            dataHoje,
+            data_pagamento:  "",
           });
+          const pagId = pagRes?.data?.id;
+
+          if (agId && pagId) {
+            await api.agendamentosOdonto.atualizar(agId, { pagamento_id: pagId });
+          }
+
+          await api.atendimentosOdonto.criar({
+            agendamento_id:            agId || null,
+            paciente_nome:             agendamento.nomePaciente,
+            profissional_id:           profissionalOdontoId ? Number(profissionalOdontoId) : null,
+            profissional_nome:         profissionalOdontoNome || "",
+            tipo_atendimento:          tipoAtend,
+            status:                    "aguardando",
+            status_pagamento:          "pendente",
+            procedimentos_solicitados: procedimentosSelecionadosOdonto,
+            observacoes_recepcao:      agendamento.observacoesRecepcao || "",
+            total:                     valorTotal,
+            desconto:                  0,
+            valor_final:               valorTotal,
+            pagamento_id:              pagId || null,
+            data:                      dataHoje,
+            hora:                      horaOdonto || "",
+          });
+          limparAgendamento();
+          if (onEncaminharParaPagamento) {
+            onEncaminharParaPagamento({
+              pagamentoId:     pagId,
+              atendimentoId:   agId,
+              paciente:        agendamento.nomePaciente,
+              cpf:             agendamento.cpf || "",
+              telefone:        agendamento.telefone || "",
+              tipoAtendimento: `Odontologia — ${tipoAtend}`,
+              profissional:    profissionalOdontoNome || "",
+              valor:           valorTotal,
+              descricao:       descricaoProc,
+              tipo:            "odonto",
+            });
+          } else {
+            toast.success(`Paciente encaminhado para Odontologia. Cobrança pendente de ${valorTotal.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })} criada.`);
+          }
+          */
         } else {
-          alert(
-            `Paciente encaminhado para Odontologia.\nPagamento pendente de ${valorTotal.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })} criado no módulo Pagamentos.`
-          );
+          // Agendamento futuro: sem pagamento; pagamento nascerá na confirmação de chegada
+          await onRefreshAgendamentosOdonto?.();
+          limparAgendamento();
+          toast.success("Agendamento odontológico criado. O paciente aparecerá no calendário e entrará na fila após check-in.");
         }
       } catch (error) {
         console.error("Erro ao encaminhar para odonto:", error);
-        alert("Não foi possível encaminhar para Odontologia.");
+        toast.error(error.data?.detail || error.message || "Não foi possível encaminhar para Odontologia.");
       } finally {
         setSalvandoConsulta(false);
       }
@@ -946,23 +1220,26 @@ export default function Pacientes({
     }
 
     // Destino: médico (fluxo original)
-    if (
-      !agendamento.cpf ||
-      !agendamento.telefone ||
-      !agendamento.medico ||
-      !agendamento.especialidade ||
-      !agendamento.hora ||
-      !agendamento.tipoAtendimento
-    ) {
-      alert("Preencha todos os dados do atendimento médico.");
+    const _horaEfetiva = agendamento.hora ||
+      (_isImediato
+        ? new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+        : "");
+
+    if (!agendamento.medico || !agendamento.especialidade || (!_isImediato && !_horaEfetiva)) {
+      const faltas = [];
+      if (!agendamento.especialidade) faltas.push("especialidade");
+      if (!agendamento.medico) faltas.push("profissional");
+      if (!_isImediato && !_horaEfetiva) faltas.push("horário");
+      toast.warn(`Preencha os campos: ${faltas.join(", ")}.`);
       return;
     }
 
-    const horarioAindaDisponivel = horariosDisponiveis.includes(normalizarHora(agendamento.hora));
-
-    if (!horarioAindaDisponivel) {
-      alert("Este horário não está mais disponível para o profissional selecionado.");
-      return;
+    if (!_isImediato) {
+      const horarioAindaDisponivel = horariosDisponiveis.includes(normalizarHora(_horaEfetiva));
+      if (!horarioAindaDisponivel) {
+        toast.warn("Este horário não está mais disponível para o profissional selecionado.");
+        return;
+      }
     }
 
     try {
@@ -980,8 +1257,8 @@ export default function Pacientes({
         profissionalUid: agendamento.medicoId,
         medicoEmail: agendamento.medicoEmail,
         profissionalEmail: agendamento.medicoEmail,
-        data: agendamento.data,
-        hora: agendamento.hora,
+        data: _dataEfetiva,
+        hora: _horaEfetiva,
         observacoesRecepcao: agendamento.observacoesRecepcao,
         tipoAtendimento:
           agendamento.tipoAtendimento === "Atendimento Imediato"
@@ -993,119 +1270,99 @@ export default function Pacientes({
         pagamentoId: "",
       });
 
-      // Criar pagamento vinculado via API MySQL
-      let checkoutMedico = null;
-      if (docRef?.id) {
-        const valorConsulta = Number(agendamento.valorConsulta || 0);
-        const pagRes = await api.pagamentos.criar({
-          nome_paciente:    agendamento.nomePaciente,
-          descricao:        `Consulta — ${agendamento.especialidade}`,
-          servico:          "Consulta Médica",
-          valor:            valorConsulta,
-          desconto:         0,
-          valor_final:      valorConsulta,
-          status:           "pendente",
-          status_pagamento: "Pendente",
-          forma_pagamento:  "",
-          tipo:             "consulta",
-          origem:           "medico",
-          profissional:     agendamento.medico || "",
-          atendimento_id:   docRef.id,
-          data:             agendamento.data,
-          data_pagamento:   "",
-        });
-        const pagId = pagRes?.data?.id;
-
-        if (pagId) {
-          await api.atendimentos.atualizar(docRef.id, { pagamento_id: pagId });
-        }
-
-        checkoutMedico = {
-          pagamentoId:     pagId,
-          atendimentoId:   docRef.id,
-          paciente:        agendamento.nomePaciente,
-          cpf:             agendamento.cpf || "",
-          telefone:        agendamento.telefone || "",
-          tipoAtendimento: `Consulta — ${agendamento.especialidade}`,
-          profissional:    agendamento.medico || "",
-          valor:           valorConsulta,
-          descricao:       `Consulta — ${agendamento.especialidade}`,
-          tipo:            "consulta",
-        };
+      // Criar pagamento antecipado apenas para agendamentos futuros (não imediatos)
+      // Para imediato, o pagamento será criado pelo médico ao finalizar o atendimento
+      // ── Registro de auditoria para antecipação de data futura ────────────
+      if (overrideMotivo) {
+        api.auditLogs.registrar({
+          usuario_id:    userData?.id || null,
+          usuario_nome:  userData?.nome || userData?.name || "",
+          usuario_role:  userData?.role || "",
+          acao:          "antecipacao_atendimento",
+          entidade:      "atendimento",
+          entidade_id:   docRef?.id || null,
+          data_original: _dataEfetiva,
+          motivo:        overrideMotivo,
+          detalhes:      {
+            paciente:        agendamento.nomePaciente,
+            profissional:    agendamento.medico || "",
+            especialidade:   agendamento.especialidade || "",
+            data_agendamento: _dataEfetiva,
+            hora:            _horaEfetiva,
+          },
+        }).catch(() => {});
       }
 
       limparAgendamento();
-      if (checkoutMedico && onEncaminharParaPagamento) {
-        onEncaminharParaPagamento(checkoutMedico);
+      if (_isImediato) {
+        toast.success(`Atendimento imediato criado. ${agendamento.nomePaciente} está aguardando pagamento antes da consulta.`);
       } else {
-        alert("Atendimento registrado com sucesso.\nPagamento pendente criado no módulo Pagamentos.");
+        toast.success("Agendamento criado com sucesso. A cobrança será gerada no check-in.");
       }
     } catch (error) {
       console.error("Erro ao registrar atendimento:", error);
-      alert("Não foi possível registrar o atendimento.");
+      toast.error("Não foi possível registrar o atendimento.");
     } finally {
       setSalvandoConsulta(false);
     }
   }
 
-  async function validarSenhaAdministrador() {
-    const senha = prompt("Digite sua senha de administrador para confirmar:");
-    if (!senha) return false;
+  async function _EXCLUIR_PACIENTE_LEGADO(paciente) {
+    if (!isAdmin) {
+      toast.warn("Apenas administradores podem excluir cadastros.");
+      return;
+    }
+    if (!await toast.confirm(`Tem certeza que deseja excluir o cadastro de ${paciente.nome}?`)) return;
+    setModalExclusao({ paciente, etapa: "senha", senha: "", motivo: "", processando: false });
+  }
 
+  async function confirmarSenhaExclusao() {
+    if (!modalExclusao?.senha) {
+      toast.warn("Informe a senha para continuar.");
+      return;
+    }
+    setModalExclusao((m) => ({ ...m, processando: true }));
     try {
-      await api.auth.login(userData?.login || userData?.email, senha);
-      return true;
+      await api.auth.login(userData?.login || userData?.email, modalExclusao.senha);
+      setModalExclusao((m) => ({ ...m, etapa: "motivo", processando: false }));
     } catch {
-      alert("Senha inválida. Exclusão cancelada.");
-      return false;
+      setModalExclusao((m) => ({ ...m, processando: false }));
+      toast.error("Senha inválida. Exclusão cancelada.");
     }
   }
 
-  async function excluirPaciente(paciente) {
-    if (!isAdmin) {
-      alert("Apenas administradores podem excluir cadastros.");
+  async function confirmarExclusaoFinal() {
+    if (!modalExclusao?.motivo?.trim()) {
+      toast.warn("Informe o motivo para concluir a exclusão.");
       return;
     }
-
-    const confirmar = window.confirm(
-      `Tem certeza que deseja excluir o cadastro de ${paciente.nome}?`
-    );
-
-    if (!confirmar) return;
-
-    const senhaValida = await validarSenhaAdministrador();
-
-    if (!senhaValida) return;
-
-    const motivo = prompt("Informe o motivo da exclusão:");
-
-    if (!motivo) {
-      alert("Informe o motivo para concluir a exclusão.");
-      return;
-    }
-
+    setModalExclusao((m) => ({ ...m, processando: true }));
     try {
-      await api.pacientes.excluir(paciente.id);
-      alert("Cadastro excluído com sucesso.");
+      await api.pacientes.excluir(modalExclusao.paciente.id);
+      toast.success("Cadastro excluído com sucesso.");
+      setModalExclusao(null);
     } catch (error) {
       console.error("Erro ao excluir paciente:", error);
-      alert("Erro ao excluir cadastro.");
+      setModalExclusao((m) => ({ ...m, processando: false }));
+      toast.error("Erro ao excluir cadastro.");
     }
   }
 
   function carregarPaciente(item) {
+    setPacienteId(item.id || null);
     setForm({
       nome: item.nome || "",
       cpf: item.cpf || "",
       telefone: item.telefone || "",
-      dataNascimento: item.dataNascimento || "",
-      sexo: item.sexo || "",
-      mae: item.mae || "",
-      pai: item.pai || "",
+      dataNascimento: item.dataNascimento || item.data_nascimento || "",
+      sexo: ({ M: 'Masculino', F: 'Feminino', outro: 'Outro' }[item.sexo] ?? item.sexo ?? ""),
+      mae: item.mae || item.nome_mae || "",
+      pai: item.pai || item.nome_pai || "",
       endereco: item.endereco || "",
-      rua: item.rua || "",
+      rua: item.rua || item.endereco || "",
+      bairro: item.bairro || "",
       cep: item.cep || "",
-      convenio: item.convenio || "Particular",
+      convenio: item.convenio || item.planoSaude || "Particular",
       status: item.status || "Ativo",
       observacoes: item.observacoes || "",
     });
@@ -1120,14 +1377,135 @@ export default function Pacientes({
     setAbaAtiva("cadastro");
   }
 
-  function carregarParaAtendimento(item) {
+
+  function carregarParaAgendar(item) {
+    limparAgendamento();
     setAgendamento((prev) => ({
       ...prev,
       nomePaciente: item.nome || "",
       cpf: item.cpf || "",
       telefone: item.telefone || "",
+      tipoAtendimento: "Agendamento",
+      data: "",
     }));
     setAbaAtiva("agendamento");
+  }
+
+  function carregarParaImediato(item) {
+    limparAgendamento();
+    setAgendamento((prev) => ({
+      ...prev,
+      nomePaciente: item.nome || "",
+      cpf: item.cpf || "",
+      telefone: item.telefone || "",
+      tipoAtendimento: "Atendimento Imediato",
+      data: hojeISO(),
+    }));
+    setAbaAtiva("agendamento");
+  }
+
+  async function _ENVIAR_PARA_FILA_LEGADO(item) {
+    const hoje = hojeISO();
+    const jaEstaFila = consultas.some((c) => {
+      const s = (c.status || "").toLowerCase();
+      return (
+        (c.paciente === item.nome || c.nomePaciente === item.nome) &&
+        c.data === hoje &&
+        ["aguardando", "em_atendimento", "presente", "confirmado"].includes(s)
+      );
+    });
+    if (jaEstaFila) {
+      toast.warn(`${item.nome} já está na fila de atendimento hoje.`);
+      return;
+    }
+    try {
+      await onAdicionarConsulta({
+        paciente:            item.nome,
+        nomePaciente:        item.nome,
+        cpf:                 item.cpf || "",
+        telefone:            item.telefone || "",
+        especialidade:       "",
+        medico:              "",
+        medicoId:            "",
+        data:                hoje,
+        hora:                new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+        tipoAtendimento:     "Atendimento Imediato",
+        observacoesRecepcao: "Paciente enviado para fila pela recepção.",
+      });
+      toast.success(`${item.nome} enviado para a fila de atendimento.`);
+    } catch (e) {
+      console.error("Erro ao enviar para fila:", e);
+      toast.error("Não foi possível enviar o paciente para a fila.");
+    }
+  }
+
+  async function registrarAcaoCheckin(ag, statusNovo) {
+    if (statusNovo === "cancelado") {
+      const nome = ag.paciente || ag.pacienteNome || ag.nomePaciente || "paciente";
+      const ok = await toast.confirm(`Cancelar agendamento de ${nome}?`);
+      if (!ok) return;
+    }
+    setConfirmandoCheckin(ag.id);
+    try {
+      if (ag._tipo === "odonto") {
+        if (statusNovo === "aguardando") {
+          await api.agendamentosOdonto.confirmarChegada(ag.id, { status: statusNovo });
+          // Pagamento já está confirmado (pré-requisito do check-in odonto).
+          // Apenas refresca dados — sem redirecionar para Pagamentos.
+          await onRefreshAgendamentosOdonto?.();
+        } else {
+          await onAtualizarAgendamentoOdonto?.(ag.id, { status: statusNovo });
+        }
+      } else {
+        await onAtualizarConsulta?.(ag.id, { status: statusNovo });
+      }
+      const nome = ag.paciente || ag.pacienteNome || ag.nomePaciente || "Paciente";
+      const msgs = {
+        aguardando: `Chegada de ${nome} confirmada. Paciente liberado para Odontologia.`,
+        faltou:     `Falta de ${nome} registrada.`,
+        cancelado:  `Agendamento de ${nome} cancelado.`,
+      };
+      toast.success(msgs[statusNovo] || "Agendamento atualizado.");
+    } catch (e) {
+      console.error(e);
+      const errors = e?.data?.errors || e?.data;
+      if (errors?.action === "redirect_to_pagamentos") {
+        // Sem pagamento confirmado — direciona recepção para registrar pagamento
+        const nome = ag.paciente || ag.pacienteNome || ag.nomePaciente || "";
+        toast.warn("Pagamento obrigatório antes de liberar para Odontologia.");
+        onEncaminharParaPagamento?.({
+          agendamentoOdontoId: errors.agendamento_id || ag.id,
+          pacienteId:          errors.paciente_id || ag.pacienteId || "",
+          paciente:            errors.paciente_nome || nome,
+          tipoAtendimento:     errors.descricao || ag.tipoAtendimento || "Atendimento odontológico",
+          profissional:        ag.profissionalNome || "",
+          valor:               errors.valor_estimado ? String(errors.valor_estimado) : "",
+          tipo:                "odonto",
+          origem:              "agendamento_odonto",
+        });
+        return;
+      }
+      toast.error(e?.data?.message || "Não foi possível atualizar o agendamento.");
+    } finally {
+      setConfirmandoCheckin(null);
+    }
+  }
+
+  async function remarcarDeHoje(ag, { data, hora }) {
+    setConfirmandoCheckin(ag.id);
+    try {
+      if (ag._tipo === "odonto") {
+        await onAtualizarAgendamentoOdonto?.(ag.id, { data, hora: hora || null, status: "remarcado" });
+      } else {
+        await onAtualizarConsulta?.(ag.id, { data, hora: hora || null, status: "remarcado" });
+      }
+      toast.success("Agendamento remarcado.");
+      setRemarcarCheckin(null);
+    } catch {
+      toast.error("Não foi possível remarcar.");
+    } finally {
+      setConfirmandoCheckin(null);
+    }
   }
 
   const buscaCadastroFiltrada = useMemo(() => {
@@ -1149,6 +1527,28 @@ export default function Pacientes({
         item.paciente === agendamento.nomePaciente && item.cpf === agendamento.cpf
     );
   }, [consultas, agendamento.nomePaciente, agendamento.cpf]);
+
+  const agendamentosDeHoje = useMemo(() => {
+    const hoje = hojeISO();
+    const medicos = consultas
+      .filter((c) => c.data === hoje && ["agendado", "confirmado"].includes(c.status || ""))
+      .map((c) => ({ ...c, _tipo: "medico" }));
+    const odonto = agendamentosOdonto
+      .filter((a) => a.data === hoje && ["agendado", "confirmado"].includes(a.status || ""))
+      .map((a) => ({ ...a, _tipo: "odonto" }));
+    return [...medicos, ...odonto].sort((a, b) => (a.hora || "").localeCompare(b.hora || ""));
+  }, [consultas, agendamentosOdonto]);
+
+  const agendamentosDeHojeFiltrados = useMemo(() => {
+    if (!buscaCheckin.trim()) return agendamentosDeHoje;
+    const termo = buscaCheckin.toLowerCase().trim();
+    return agendamentosDeHoje.filter((a) => {
+      const nome = (a.paciente || a.pacienteNome || a.nomePaciente || "").toLowerCase();
+      const prof = (a.medico || a.profissionalNome || "").toLowerCase();
+      const esp  = (a.especialidade || "").toLowerCase();
+      return nome.includes(termo) || prof.includes(termo) || esp.includes(termo);
+    });
+  }, [agendamentosDeHoje, buscaCheckin]);
 
   const totalPacientes = pacientes.length;
   const pacientesAtivos = pacientes.filter((item) => item.status === "Ativo").length;
@@ -1195,11 +1595,11 @@ export default function Pacientes({
     borderRadius: "12px",
   };
 
+  const isImediato = agendamento.tipoAtendimento === "Atendimento Imediato";
+
   const profissionalDesabilitado =
     !especialidadeSelecionada ||
-    !agendamento.data ||
-    carregandoProfissionais ||
-    profissionaisDisponiveis.length === 0;
+    carregandoProfissionais;
 
   const horarioDesabilitado =
     !agendamento.medico ||
@@ -1233,32 +1633,6 @@ export default function Pacientes({
         </div>
       </div>
 
-      <div className="stats-grid">
-        <div className="stat-box patients-stat patients-stat-blue">
-          <div className="stat-label">Total de pacientes</div>
-          <div className="stat-value">{totalPacientes}</div>
-          <div className="stat-info">Base cadastrada</div>
-        </div>
-
-        <div className="stat-box patients-stat patients-stat-cyan">
-          <div className="stat-label">Pacientes ativos</div>
-          <div className="stat-value">{pacientesAtivos}</div>
-          <div className="stat-info">Em acompanhamento</div>
-        </div>
-
-        <div className="stat-box patients-stat patients-stat-purple">
-          <div className="stat-label">Retornos</div>
-          <div className="stat-value">{pacientesRetorno}</div>
-          <div className="stat-info">Consultas de revisão</div>
-        </div>
-
-        <div className="stat-box patients-stat patients-stat-green">
-          <div className="stat-label">Atendimentos do paciente</div>
-          <div className="stat-value">{consultasDoPaciente.length}</div>
-          <div className="stat-info">Histórico na recepção</div>
-        </div>
-      </div>
-
       <div
         className="page-card patients-card patients-main-card"
         style={{ marginTop: "20px", ...painelInternoStyle }}
@@ -1289,19 +1663,27 @@ export default function Pacientes({
 
           <button
             className={`patients-tab ${abaAtiva === "buscar" ? "active" : ""}`}
-            onClick={() => {
-              setAbaAtiva("buscar");
-              setPaginaBusca(1);
-            }}
+            onClick={() => { setAbaAtiva("buscar"); setPaginaBusca(1); }}
           >
-            Buscar cadastro
+            Buscar paciente
           </button>
 
           <button
             className={`patients-tab ${abaAtiva === "agendamento" ? "active" : ""}`}
             onClick={() => setAbaAtiva("agendamento")}
           >
-            Encaminhar atendimento
+            Agendar
+          </button>
+
+          <button
+            className={`patients-tab ${abaAtiva === "checkin" ? "active" : ""}`}
+            onClick={() => setAbaAtiva("checkin")}
+          >
+            Check-in{agendamentosDeHoje.length > 0 && (
+              <span style={{ marginLeft: 6, background: "#2563eb", color: "#fff", borderRadius: 10, fontSize: 10, fontWeight: 700, padding: "1px 6px" }}>
+                {agendamentosDeHoje.length}
+              </span>
+            )}
           </button>
         </div>
 
@@ -1309,6 +1691,11 @@ export default function Pacientes({
           {abaAtiva === "cadastro" && (
             <div className="patients-cadastro-layout" style={{ height: "100%" }}>
               <div className="patients-cadastro-main" style={scrollInternoStyle}>
+                {pacienteId && (
+                  <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: "8px 14px", marginBottom: 12, fontSize: 13, color: "#1d4ed8", fontWeight: 600 }}>
+                    ✏️ Editando paciente — as alterações sobrescreverão o cadastro existente.
+                  </div>
+                )}
                 <div className="patients-section-card">
                   <h4 className="patients-section-title">Dados pessoais</h4>
 
@@ -1332,7 +1719,18 @@ export default function Pacientes({
                         value={form.cpf}
                         onChange={handleChange}
                         placeholder="000.000.000-00"
+                        style={(cpfDuplicado || cpfApiNome) ? { borderColor: "#f59e0b" } : form.cpf.replace(/\D/g,"").length === 11 && !validarCPF(form.cpf) ? { borderColor: "#dc2626" } : {}}
                       />
+                      {(cpfDuplicado || cpfApiNome) && (
+                        <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#d97706", fontWeight: 600 }}>
+                          ⚠ Paciente já cadastrado: {cpfDuplicado ? cpfDuplicado.nome : cpfApiNome}
+                        </p>
+                      )}
+                      {!cpfDuplicado && !cpfApiNome && form.cpf.replace(/\D/g,"").length === 11 && !validarCPF(form.cpf) && (
+                        <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#dc2626", fontWeight: 600 }}>
+                          CPF inválido
+                        </p>
+                      )}
                     </div>
 
                     <div>
@@ -1444,13 +1842,13 @@ export default function Pacientes({
 
                   <div className="patients-form-grid">
                     <div>
-                      <label>Endereço / bairro</label>
+                      <label>Endereço</label>
                       <input
                         className="input"
                         name="endereco"
                         value={form.endereco}
                         onChange={handleChange}
-                        placeholder="Digite o bairro ou endereço geral"
+                        placeholder="Digite o endereço"
                       />
                     </div>
 
@@ -1462,6 +1860,17 @@ export default function Pacientes({
                         value={form.rua}
                         onChange={handleChange}
                         placeholder="Digite a rua"
+                      />
+                    </div>
+
+                    <div>
+                      <label>Bairro</label>
+                      <input
+                        className="input"
+                        name="bairro"
+                        value={form.bairro}
+                        onChange={handleChange}
+                        placeholder="Digite o bairro"
                       />
                     </div>
 
@@ -1499,10 +1908,14 @@ export default function Pacientes({
                     className="primary-btn patients-save-btn"
                     disabled={salvandoPaciente}
                   >
-                    {salvandoPaciente ? "Salvando..." : "Salvar paciente"}
+                    {salvandoPaciente
+                      ? "Salvando..."
+                      : pacienteId
+                      ? "Salvar alterações"
+                      : "Cadastrar paciente"}
                   </button>
                   <button onClick={limparFormulario} className="secondary-btn">
-                    Limpar
+                    {pacienteId ? "Cancelar edição" : "Limpar"}
                   </button>
                 </div>
               </div>
@@ -1518,7 +1931,7 @@ export default function Pacientes({
 
                   <div className="patients-summary-card-item">
                     <span>CPF</span>
-                    <strong>{form.cpf || "—"}</strong>
+                    <strong>{mascaraCPF(form.cpf)}</strong>
                   </div>
 
                   <div className="patients-summary-card-item">
@@ -1570,36 +1983,37 @@ export default function Pacientes({
                     {buscaPaginada.map((item) => (
                       <tr key={item.id}>
                         <td>{item.nome}</td>
-                        <td>{item.cpf}</td>
-                        <td>{item.telefone}</td>
+                        <td>{mascaraCPF(item.cpf)}</td>
+                        <td>{mascaraTelefone(item.telefone)}</td>
                         <td>{item.convenio}</td>
                         <td>
                           <span className={badgeClass(item.status)}>{item.status}</span>
                         </td>
                         <td>
-                          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                          <div style={{ display: "flex", gap: "5px", flexWrap: "wrap" }}>
                             <button
                               className="secondary-btn"
+                              style={{ fontSize: "12px", padding: "5px 10px" }}
                               onClick={() => carregarPaciente(item)}
                             >
-                              Carregar cadastro
+                              Editar
                             </button>
-
                             <button
                               className="secondary-btn"
-                              onClick={() => carregarParaAtendimento(item)}
+                              style={{ fontSize: "12px", padding: "5px 10px", background: "#eff6ff", color: "#1d4ed8", borderColor: "#bfdbfe" }}
+                              onClick={() => carregarParaAgendar(item)}
+                              title="Agendar consulta para data futura"
                             >
-                              Encaminhar
+                              Agendar consulta
                             </button>
-
-                            {isAdmin && (
-                              <button
-                                className="danger-btn"
-                                onClick={() => excluirPaciente(item)}
-                              >
-                                Excluir
-                              </button>
-                            )}
+                            <button
+                              className="secondary-btn"
+                              style={{ fontSize: "12px", padding: "5px 10px", background: "#f0fdf4", color: "#16a34a", borderColor: "#bbf7d0" }}
+                              onClick={() => carregarParaImediato(item)}
+                              title="Criar atendimento imediato — paciente entra na fila agora"
+                            >
+                              Atendimento imediato
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -1607,7 +2021,22 @@ export default function Pacientes({
 
                     {buscaCadastroFiltrada.length === 0 && (
                       <tr>
-                        <td colSpan="6">Nenhum cadastro encontrado.</td>
+                        <td colSpan="6" style={{ textAlign: "center", padding: "36px 20px" }}>
+                          <div style={{ color: "#94a3b8", fontSize: 13, marginBottom: 10 }}>
+                            {buscaCadastro
+                              ? `Nenhum cadastro encontrado para "${buscaCadastro}".`
+                              : "Nenhum paciente cadastrado ainda."}
+                          </div>
+                          {!buscaCadastro && (
+                            <button
+                              className="primary-btn"
+                              style={{ fontSize: 13, padding: "7px 18px" }}
+                              onClick={() => setAbaAtiva("cadastro")}
+                            >
+                              + Cadastrar primeiro paciente
+                            </button>
+                          )}
+                        </td>
                       </tr>
                     )}
                   </tbody>
@@ -1644,7 +2073,9 @@ export default function Pacientes({
             <div className="patients-cadastro-layout" style={{ height: "100%" }}>
               <div className="patients-cadastro-main" style={scrollInternoStyle}>
                 <div className="patients-section-card">
-                  <h4 className="patients-section-title">Encaminhar atendimento</h4>
+                  <h4 className="patients-section-title">
+                    {isImediato ? "Atendimento imediato" : "Agendar consulta"}
+                  </h4>
 
                   <div className="patients-form-grid">
                     <div>
@@ -1800,16 +2231,31 @@ export default function Pacientes({
                       </div>
                     )}
 
-                    <div>
-                      <label>Data</label>
-                      <input
-                        className="input"
-                        type="date"
-                        name="data"
-                        value={agendamento.data}
-                        onChange={handleAgendamentoChange}
-                      />
-                    </div>
+                    {isImediato ? (
+                      <div>
+                        <label>Data</label>
+                        <input
+                          className="input"
+                          type="date"
+                          value={agendamento.data}
+                          readOnly
+                          disabled
+                          style={{ color: "#64748b", background: "#f1f5f9" }}
+                        />
+                      </div>
+                    ) : (
+                      <div>
+                        <label>Data</label>
+                        <input
+                          className="input"
+                          type="date"
+                          name="data"
+                          value={agendamento.data}
+                          min={hojeISO()}
+                          onChange={handleAgendamentoChange}
+                        />
+                      </div>
+                    )}
 
                     {destinoAtendimento === "odonto" ? (
                       <>
@@ -1820,9 +2266,13 @@ export default function Pacientes({
                             value={profissionalOdontoId}
                             onChange={(e) => {
                               const id = e.target.value;
-                              const prof = profissionaisOdonto.find((p) => (p.id || p.uid) === id);
+                              const prof = profissionaisOdonto.find((p) => String(p.id || p.uid) === id);
                               setProfissionalOdontoId(id);
                               setProfissionalOdontoNome(prof ? obterNomeProfissional(prof) : "");
+                              setHoraOdonto("");
+                              setHorariosDisponiveisOdonto(
+                                id ? computarHorariosOdonto(id, agendamento.data) : []
+                              );
                             }}
                             disabled={carregandoProfissionaisOdonto}
                           >
@@ -1842,19 +2292,37 @@ export default function Pacientes({
                           </select>
                           {profissionaisOdonto.length === 0 && !carregandoProfissionaisOdonto && (
                             <div style={{ fontSize: "12px", color: "#f59e0b", marginTop: "4px" }}>
-                              Cadastre um profissional com perfil "Odonto" na Administração para que ele apareça aqui.
+                              Cadastre um profissional com perfil "Odonto" em Configurações para que ele apareça aqui.
                             </div>
                           )}
                         </div>
 
                         <div>
-                          <label>Horário preferencial</label>
-                          <input
-                            className="input"
-                            type="time"
-                            value={horaOdonto}
-                            onChange={(e) => setHoraOdonto(e.target.value)}
-                          />
+                          <label>Horário</label>
+                          {!isImediato && profissionalOdontoId && horariosDisponiveisOdonto.length > 0 ? (
+                            <select
+                              className="select"
+                              value={horaOdonto}
+                              onChange={(e) => setHoraOdonto(e.target.value)}
+                            >
+                              <option value="">Selecione o horário</option>
+                              {horariosDisponiveisOdonto.map((h) => (
+                                <option key={h} value={h}>{h}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              className="input"
+                              type="time"
+                              value={horaOdonto}
+                              onChange={(e) => setHoraOdonto(e.target.value)}
+                            />
+                          )}
+                          {!isImediato && profissionalOdontoId && agendamento.data && horariosDisponiveisOdonto.length === 0 && (
+                            <div style={{ fontSize: 12, color: "#f59e0b", marginTop: 4 }}>
+                              Nenhum horário configurado. Insira manualmente.
+                            </div>
+                          )}
                         </div>
                       </>
                     ) : (
@@ -1871,12 +2339,14 @@ export default function Pacientes({
                             <option value="">
                               {!especialidadeSelecionada
                                 ? "Selecione a especialidade primeiro"
-                                : !agendamento.data
-                                ? "Selecione uma data"
                                 : carregandoProfissionais
                                 ? "Carregando profissionais..."
+                                : !isImediato && !agendamento.data
+                                ? "Selecione uma data para ver horários disponíveis"
                                 : profissionaisDisponiveis.length === 0
-                                ? "Nenhum profissional disponível para esta data"
+                                ? isImediato
+                                  ? "Nenhum profissional encontrado para esta especialidade"
+                                  : "Nenhum profissional disponível para esta data"
                                 : "Selecione o profissional"}
                             </option>
                             {profissionaisDisponiveis.map((profissional) => (
@@ -1884,35 +2354,50 @@ export default function Pacientes({
                                 key={obterIdProfissional(profissional)}
                                 value={obterIdProfissional(profissional)}
                               >
-                                {profissional.nomeExibicao} — {profissional.totalHorariosLivres} horário(s)
+                                {profissional.nomeExibicao}
+                                {!isImediato && ` — ${profissional.totalHorariosLivres} horário(s)`}
                               </option>
                             ))}
                           </select>
                         </div>
 
-                        <div>
-                          <label>Hora</label>
-                          <select
-                            className="select"
-                            name="hora"
-                            value={agendamento.hora}
-                            onChange={handleAgendamentoChange}
-                            disabled={horarioDesabilitado}
-                          >
-                            <option value="">
-                              {!agendamento.medico
-                                ? "Selecione um profissional"
-                                : horariosDisponiveis.length === 0
-                                ? "Nenhum horário disponível"
-                                : "Selecione o horário"}
-                            </option>
-                            {horariosDisponiveis.map((hora) => (
-                              <option key={hora} value={hora}>
-                                {hora}
+                        {isImediato ? (
+                          <div>
+                            <label>Hora</label>
+                            <input
+                              className="input"
+                              type="text"
+                              value="Registrado automaticamente"
+                              disabled
+                              readOnly
+                              style={{ color: "#94a3b8", fontStyle: "italic" }}
+                            />
+                          </div>
+                        ) : (
+                          <div>
+                            <label>Hora</label>
+                            <select
+                              className="select"
+                              name="hora"
+                              value={agendamento.hora}
+                              onChange={handleAgendamentoChange}
+                              disabled={horarioDesabilitado}
+                            >
+                              <option value="">
+                                {!agendamento.medico
+                                  ? "Selecione um profissional"
+                                  : horariosDisponiveis.length === 0
+                                  ? "Nenhum horário disponível"
+                                  : "Selecione o horário"}
                               </option>
-                            ))}
-                          </select>
-                        </div>
+                              {horariosDisponiveis.map((hora) => (
+                                <option key={hora} value={hora}>
+                                  {hora}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
                       </>
                     )}
 
@@ -1953,8 +2438,8 @@ export default function Pacientes({
                       {salvandoConsulta
                         ? "Enviando..."
                         : isOdonto
-                        ? "🦷 Encaminhar para Odontologia"
-                        : "Encaminhar para o profissional"}
+                          ? isImediato ? "🦷 Iniciar atendimento odontológico" : "🦷 Criar agendamento odontológico"
+                          : isImediato ? "Iniciar atendimento imediato" : "Criar agendamento"}
                     </button>
                     <button onClick={limparAgendamento} className="secondary-btn">
                       Limpar
@@ -1994,8 +2479,254 @@ export default function Pacientes({
               </div>
             </div>
           )}
+
+          {/* ── Aba Check-in ─────────────────────────────────────────────────── */}
+          {abaAtiva === "checkin" && (
+            <div style={{ height: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
+              {/* Busca */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0, flexWrap: "wrap" }}>
+                <input
+                  className="input"
+                  style={{ flex: 1, minWidth: 220 }}
+                  placeholder="Buscar por paciente, profissional ou especialidade…"
+                  value={buscaCheckin}
+                  onChange={(e) => setBuscaCheckin(e.target.value)}
+                />
+                <span style={{ fontSize: 13, color: "#64748b", whiteSpace: "nowrap" }}>
+                  {agendamentosDeHojeFiltrados.length} agendamento{agendamentosDeHojeFiltrados.length !== 1 ? "s" : ""} pendente{agendamentosDeHojeFiltrados.length !== 1 ? "s" : ""}
+                </span>
+              </div>
+
+              {/* Lista */}
+              <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
+                {agendamentosDeHojeFiltrados.length === 0 ? (
+                  <div style={{ textAlign: "center", padding: "48px 20px", color: "#94a3b8" }}>
+                    <div style={{ fontSize: 32, marginBottom: 12 }}>✓</div>
+                    <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: "#64748b" }}>
+                      {buscaCheckin ? "Nenhum resultado" : "Nenhum agendamento pendente para hoje"}
+                    </p>
+                    <p style={{ margin: "6px 0 0", fontSize: 13 }}>
+                      {!buscaCheckin && "Todos os check-ins foram realizados ou não há agendamentos para hoje."}
+                    </p>
+                  </div>
+                ) : agendamentosDeHojeFiltrados.map((ag) => {
+                  const s = ag.status || "agendado";
+                  const nome = ag.paciente || ag.pacienteNome || ag.nomePaciente || "—";
+                  const prof = ag.medico || ag.profissionalNome || "—";
+                  const esp  = ag.especialidade || (ag._tipo === "odonto" ? "Odontologia" : "—");
+                  const tel  = ag.telefone || ag.paciente_telefone || ag.celular || "";
+                  const hora = ag.hora ? String(ag.hora).slice(0, 5) : "—";
+                  const carregando = confirmandoCheckin === ag.id;
+                  const COR_S   = { agendado: "#2563eb", confirmado: "#059669" };
+                  const LABEL_S = { agendado: "Agendado", confirmado: "Confirmado" };
+                  const corBorda = COR_S[s] || "#2563eb";
+                  return (
+                    <div key={ag.id} style={{
+                      background: "#fff", border: "1px solid #e2e8f0",
+                      borderLeft: `4px solid ${corBorda}`,
+                      borderRadius: 12, padding: "14px 16px",
+                    }}>
+                      <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+                        <div style={{ flex: 1, minWidth: 180 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 5 }}>
+                            <span style={{ fontWeight: 700, fontSize: 15, color: "#0f172a" }}>{nome}</span>
+                            <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 10, fontWeight: 700, color: corBorda, background: `${corBorda}18` }}>
+                              {LABEL_S[s] || s}
+                            </span>
+                            {ag._tipo === "odonto" && (
+                              <span style={{ fontSize: 11, padding: "2px 6px", borderRadius: 8, background: "#f0fdf4", color: "#0f766e", fontWeight: 600 }}>Odonto</span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 12, color: "#64748b", display: "flex", gap: 14, flexWrap: "wrap" }}>
+                            <span>🕐 {hora}</span>
+                            <span>👨‍⚕️ {prof}</span>
+                            {esp && esp !== "—" && <span>🩺 {esp}</span>}
+                            {tel && <span>📱 {tel}</span>}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", flexShrink: 0, alignItems: "center" }}>
+                          <button
+                            onClick={() => registrarAcaoCheckin(ag, "aguardando")}
+                            disabled={carregando}
+                            style={{ padding: "7px 14px", borderRadius: 8, border: "none", fontSize: 12, fontWeight: 700, background: carregando ? "#f1f5f9" : "#1d4ed8", color: carregando ? "#94a3b8" : "#fff", cursor: carregando ? "not-allowed" : "pointer" }}
+                          >
+                            {carregando ? "…" : "✓ Confirmar chegada"}
+                          </button>
+                          <button
+                            onClick={() => setRemarcarCheckin(ag)}
+                            disabled={carregando}
+                            style={{ padding: "7px 11px", borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 12, fontWeight: 600, background: "#fff", color: "#475569", cursor: "pointer" }}
+                          >
+                            ↻ Remarcar
+                          </button>
+                          <button
+                            onClick={() => registrarAcaoCheckin(ag, "faltou")}
+                            disabled={carregando}
+                            style={{ padding: "7px 11px", borderRadius: 8, border: "1px solid #fee2e2", fontSize: 12, fontWeight: 600, background: "#fff5f5", color: "#dc2626", cursor: "pointer" }}
+                          >
+                            Faltou
+                          </button>
+                          <button
+                            onClick={() => registrarAcaoCheckin(ag, "cancelado")}
+                            disabled={carregando}
+                            style={{ padding: "7px 11px", borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 12, fontWeight: 600, background: "#f8fafc", color: "#64748b", cursor: "pointer" }}
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Modal de remarcação via Check-in */}
+      {remarcarCheckin && (
+        <ModalRemarcarCheckin
+          ag={remarcarCheckin}
+          onSalvar={(data, hora) => remarcarDeHoje(remarcarCheckin, { data, hora })}
+          onFechar={() => setRemarcarCheckin(null)}
+        />
+      )}
+
+      {modalExclusao && (
+        <div className="modal-overlay" onClick={() => !modalExclusao.processando && setModalExclusao(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}
+            style={{ background: "#fff", borderRadius: 12, padding: "28px 32px", maxWidth: 420, width: "90%", boxShadow: "0 8px 40px rgba(0,0,0,0.18)" }}>
+            <h3 style={{ margin: "0 0 6px", color: "#0f172a", fontSize: 17 }}>Excluir cadastro</h3>
+            <p style={{ margin: "0 0 18px", color: "#64748b", fontSize: 14 }}>
+              Paciente: <strong>{modalExclusao.paciente.nome}</strong>
+            </p>
+
+            {modalExclusao.etapa === "senha" && (
+              <>
+                <p style={{ margin: "0 0 10px", fontSize: 14, color: "#475569" }}>Confirme sua senha de administrador para prosseguir.</p>
+                <input
+                  type="password"
+                  className="login-input-v2"
+                  style={{ width: "100%", marginBottom: 16, boxSizing: "border-box" }}
+                  placeholder="Senha do administrador"
+                  value={modalExclusao.senha}
+                  autoFocus
+                  onChange={(e) => setModalExclusao((m) => ({ ...m, senha: e.target.value }))}
+                  onKeyDown={(e) => e.key === "Enter" && confirmarSenhaExclusao()}
+                  disabled={modalExclusao.processando}
+                />
+                <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                  <button className="btn btn-secondary btn-sm" onClick={() => setModalExclusao(null)} disabled={modalExclusao.processando}>Cancelar</button>
+                  <button className="btn btn-primary btn-sm" onClick={confirmarSenhaExclusao} disabled={modalExclusao.processando}>
+                    {modalExclusao.processando ? "Verificando..." : "Confirmar"}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {modalExclusao.etapa === "motivo" && (
+              <>
+                <p style={{ margin: "0 0 10px", fontSize: 14, color: "#475569" }}>Informe o motivo da exclusão.</p>
+                <input
+                  type="text"
+                  className="login-input-v2"
+                  style={{ width: "100%", marginBottom: 16, boxSizing: "border-box" }}
+                  placeholder="Motivo da exclusão"
+                  value={modalExclusao.motivo}
+                  autoFocus
+                  onChange={(e) => setModalExclusao((m) => ({ ...m, motivo: e.target.value }))}
+                  onKeyDown={(e) => e.key === "Enter" && confirmarExclusaoFinal()}
+                  disabled={modalExclusao.processando}
+                />
+                <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                  <button className="btn btn-secondary btn-sm" onClick={() => setModalExclusao(null)} disabled={modalExclusao.processando}>Cancelar</button>
+                  <button className="btn btn-primary btn-sm" onClick={confirmarExclusaoFinal} disabled={modalExclusao.processando}
+                    style={{ background: "var(--danger, #dc2626)", borderColor: "var(--danger, #dc2626)" }}>
+                    {modalExclusao.processando ? "Excluindo..." : "Excluir definitivamente"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: agendamento em data futura ─────────────────────────────── */}
+      {modalDataFutura && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 9999,
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          <div style={{
+            background: "#fff", borderRadius: 14, padding: "28px 32px",
+            maxWidth: 460, width: "90%", boxShadow: "0 12px 48px rgba(0,0,0,0.22)",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+              <span style={{ fontSize: 28 }}>⚠️</span>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "#b45309" }}>
+                  Agendamento em data futura
+                </h3>
+                <p style={{ margin: "4px 0 0", fontSize: 13, color: "#78350f" }}>
+                  Esta consulta está marcada para <strong>{(() => {
+                    const d = agendamento.data;
+                    if (!d) return "data futura";
+                    const [y, m, dia] = d.split("-");
+                    return `${dia}/${m}/${y}`;
+                  })()}</strong>. O paciente não deve ser enviado para a fila antes da data do atendimento.
+                </p>
+              </div>
+            </div>
+            <p style={{ fontSize: 13, color: "#374151", marginBottom: 14 }}>
+              Para antecipar o atendimento, informe o motivo. Isso será registrado no log de auditoria.
+            </p>
+            <textarea
+              rows={3}
+              placeholder="Motivo da antecipação (ex: paciente solicitou urgência, encaixe por indicação médica…)"
+              value={modalDataFutura.motivo}
+              onChange={(e) => setModalDataFutura((m) => ({ ...m, motivo: e.target.value }))}
+              style={{
+                width: "100%", boxSizing: "border-box", padding: "9px 12px",
+                borderRadius: 8, border: "1.5px solid #d1d5db", fontSize: 13,
+                resize: "vertical", minHeight: 72, outline: "none",
+                fontFamily: "inherit",
+              }}
+              autoFocus
+            />
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
+              <button
+                onClick={() => setModalDataFutura(null)}
+                style={{
+                  padding: "8px 20px", borderRadius: 8, border: "1px solid #d1d5db",
+                  background: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#374151",
+                }}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => {
+                  if (!modalDataFutura.motivo.trim()) {
+                    toast.warn("Informe o motivo da antecipação para continuar.");
+                    return;
+                  }
+                  const motivo = modalDataFutura.motivo;
+                  setModalDataFutura(null);
+                  registrarAtendimento(motivo);
+                }}
+                style={{
+                  padding: "8px 20px", borderRadius: 8, border: "none",
+                  background: "#b45309", color: "#fff",
+                  cursor: "pointer", fontSize: 13, fontWeight: 600,
+                }}
+              >
+                Confirmar antecipação
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

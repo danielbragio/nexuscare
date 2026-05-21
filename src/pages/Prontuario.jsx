@@ -1,5 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "../context/AuthContext";
+import { useToast } from "../context/ToastContext";
+import { formatarData, calcularIdade, dateToLocalISO } from "../utils/dateUtils";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────
 
@@ -7,22 +9,6 @@ function normStatus(s) {
   const t = (s || "").toLowerCase().trim();
   if (t === "finalizado" || t === "finalizada") return "finalizado";
   return t;
-}
-
-function formatarData(iso) {
-  if (!iso) return "—";
-  const [y, m, d] = String(iso).split("-");
-  return `${d}/${m}/${y}`;
-}
-
-function calcularIdade(dataNasc) {
-  if (!dataNasc) return null;
-  const nasc = new Date(dataNasc + "T00:00:00");
-  const hoje = new Date();
-  let idade = hoje.getFullYear() - nasc.getFullYear();
-  const mo = hoje.getMonth() - nasc.getMonth();
-  if (mo < 0 || (mo === 0 && hoje.getDate() < nasc.getDate())) idade--;
-  return idade;
 }
 
 function normText(s) {
@@ -39,7 +25,6 @@ function formatarMoeda(v) {
 
 function formatarTimestamp(ts) {
   if (!ts) return null;
-  if (ts?.toDate) return ts.toDate();
   if (ts instanceof Date) return ts;
   const d = new Date(ts);
   return isNaN(d) ? null : d;
@@ -100,9 +85,10 @@ function Campo({ label, children, span }) {
 
 // ── COMPONENTE PRINCIPAL ─────────────────────────────────────────────────────────
 
-export default function Prontuario({ consultas = [], atendimentosOdonto = [], pacientes = [], pagamentos = [] }) {
+export default function Prontuario({ consultas = [], atendimentosOdonto = [], pacientes = [] }) {
   const { userData } = useAuth();
-  const isAdmin = userData?.role === "admin" || (Array.isArray(userData?.permissions) && userData.permissions.includes("administracao"));
+  const toast = useToast();
+  const isAdmin = userData?.role === "admin" || (Array.isArray(userData?.permissions) && (userData.permissions.includes("administracao") || userData.permissions.includes("configuracoes")));
   const isMedico = userData?.role === "medico" || userData?.role === "médico";
 
   const [busca, setBusca] = useState("");
@@ -112,11 +98,14 @@ export default function Prontuario({ consultas = [], atendimentosOdonto = [], pa
   const [filtroFim, setFiltroFim] = useState("");
   const [selecionado, setSelecionado] = useState(null);
   const [aba, setAba] = useState("resumo");
+  const [visiveis, setVisiveis] = useState(20);
 
-  // Prontuários finalizados (base)
+  const hoje = useMemo(() => new Date().toISOString().slice(0, 10), []);
+
+  // Prontuários finalizados (base) — never show future dates
   const prontuarios = useMemo(() => {
     const base = consultas
-      .filter((c) => normStatus(c.status) === "finalizado" && c.prontuario)
+      .filter((c) => normStatus(c.status) === "finalizado" && c.prontuario && (c.data || "") <= hoje)
       .sort((a, b) => (b.data || "").localeCompare(a.data || ""));
     if (isAdmin) return base;
     if (isMedico && userData?.id) {
@@ -127,7 +116,7 @@ export default function Prontuario({ consultas = [], atendimentosOdonto = [], pa
       );
     }
     return base;
-  }, [consultas, isAdmin, isMedico, userData]);
+  }, [consultas, isAdmin, isMedico, userData, hoje]);
 
   const profissionais = useMemo(() =>
     [...new Set(prontuarios.map((c) => c.medico).filter(Boolean))].sort(),
@@ -148,6 +137,8 @@ export default function Prontuario({ consultas = [], atendimentosOdonto = [], pa
       return buscaOk && profOk && espOk && inicioOk && fimOk;
     });
   }, [prontuarios, busca, filtroProfissional, filtroEspecialidade, filtroInicio, filtroFim]);
+
+  useEffect(() => { setVisiveis(20); }, [prontuarios, busca, filtroProfissional, filtroEspecialidade, filtroInicio, filtroFim]); // eslint-disable-line react-hooks/set-state-in-effect
 
   // Dados do paciente selecionado
   const dadosPaciente = useMemo(() => {
@@ -207,7 +198,7 @@ export default function Prontuario({ consultas = [], atendimentosOdonto = [], pa
     });
     historicoOdonto.forEach((a) => {
       const ts = formatarTimestamp(a.finalizadoEm);
-      const dataISO = ts ? ts.toISOString().split("T")[0] : a.data || "";
+      const dataISO = ts ? dateToLocalISO(ts) : a.data || "";
       const procs = (a.procedimentosRealizados || []).map((p) => p.nome).join(", ");
       eventos.push({
         id: `odo-${a.id}`,
@@ -253,14 +244,15 @@ export default function Prontuario({ consultas = [], atendimentosOdonto = [], pa
     return { cids, meds, alergias, totalConsultas: historicoPaciente.length };
   }, [historicoPaciente]);
 
-  const totalPacientes = new Set(prontuarios.map((c) => c.paciente)).size;
-  const totalProfissionais = new Set(prontuarios.map((c) => c.medico).filter(Boolean)).size;
-  const totalEspecialidades = new Set(prontuarios.map((c) => c.especialidade).filter(Boolean)).size;
+  // métricas reservadas para uso futuro
+  // const totalPacientes = new Set(prontuarios.map((c) => c.paciente)).size;
+  // const totalProfissionais = new Set(prontuarios.map((c) => c.medico).filter(Boolean)).size;
+  // const totalEspecialidades = new Set(prontuarios.map((c) => c.especialidade).filter(Boolean)).size;
 
   function copiar(texto) {
     navigator.clipboard.writeText(texto || "")
-      .then(() => alert("Copiado com sucesso."))
-      .catch(() => alert("Não foi possível copiar."));
+      .then(() => toast.success("Copiado com sucesso."))
+      .catch(() => toast.error("Não foi possível copiar."));
   }
 
   function gerarDeclaracao(c) {
@@ -269,35 +261,100 @@ export default function Prontuario({ consultas = [], atendimentosOdonto = [], pa
 
   function imprimirProntuario(c) {
     const p = c.prontuario || {};
+
+    const CORES_RISCO = {
+      vermelho: "#dc2626", laranja: "#ea580c", amarelo: "#ca8a04",
+      verde: "#16a34a", azul: "#2563eb",
+    };
+    const LABELS_RISCO = {
+      vermelho: "Vermelho — Emergência", laranja: "Laranja — Muito urgente",
+      amarelo: "Amarelo — Urgente", verde: "Verde — Pouco urgente", azul: "Azul — Não urgente",
+    };
+
     const vitais = [
-      p.pressaoSistolica && `PA: ${p.pressaoSistolica}/${p.pressaoDiastolica} mmHg`,
-      p.frequenciaCardiaca && `FC: ${p.frequenciaCardiaca} bpm`,
-      p.temperatura && `Temp: ${p.temperatura}°C`,
-      p.peso && `Peso: ${p.peso} kg`,
-      p.saturacaoO2 && `SpO2: ${p.saturacaoO2}%`,
-    ].filter(Boolean).join("   ");
-    const html = `<!DOCTYPE html><html><head><title>Prontuário — ${c.paciente}</title><style>body{font-family:Arial,sans-serif;padding:40px;color:#111;font-size:13px}h1{font-size:18px;margin-bottom:4px}h2{font-size:14px;color:#334155;margin:20px 0 6px;border-bottom:1px solid #e2e8f0;padding-bottom:4px}.row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}.field strong{display:block;font-size:10px;text-transform:uppercase;color:#94a3b8;margin-bottom:2px}@media print{body{padding:20px}}</style></head><body>
+      (c.pa || p.pa)               && `PA: ${c.pa || p.pa} mmHg`,
+      (c.temp || p.temperatura)    && `Temp: ${c.temp || p.temperatura}°C`,
+      (c.saturacao || p.saturacaoO2) && `SpO₂: ${c.saturacao || p.saturacaoO2}%`,
+      (c.peso || p.peso)           && `Peso: ${c.peso || p.peso} kg`,
+      (c.altura || p.altura)       && `Altura: ${c.altura || p.altura} cm`,
+      p.freq_cardiaca              && `FC: ${p.freq_cardiaca} bpm`,
+      p.freq_respiratoria          && `FR: ${p.freq_respiratoria} irpm`,
+      p.glicemia                   && `Glicemia: ${p.glicemia} mg/dL`,
+      p.frequenciaCardiaca         && !p.freq_cardiaca && `FC: ${p.frequenciaCardiaca} bpm`,
+      p.pressaoSistolica           && !c.pa && `PA: ${p.pressaoSistolica}/${p.pressaoDiastolica || "?"} mmHg`,
+    ].filter(Boolean).join("   &nbsp;&nbsp;");
+
+    const riscoHtml = p.classificacao_risco
+      ? `<div style="margin:6px 0 0;display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:700;color:${CORES_RISCO[p.classificacao_risco] || "#374151"};border:1px solid ${CORES_RISCO[p.classificacao_risco] || "#e5e7eb"}">${LABELS_RISCO[p.classificacao_risco] || p.classificacao_risco}</div>`
+      : "";
+
+    const triagem = [
+      p.queixa_principal && `<h2>Queixa Principal</h2><p>${p.queixa_principal.replace(/\n/g, "<br>")}</p>`,
+      p.alergias         && `<h2>Alergias</h2><p>${p.alergias}</p>`,
+      p.medicamentos_uso && `<h2>Medicamentos em Uso</h2><p>${p.medicamentos_uso}</p>`,
+    ].filter(Boolean).join("");
+
+    const html = `<!DOCTYPE html>
+<html><head><title>Prontuário — ${c.paciente || "Paciente"}</title>
+<meta charset="utf-8">
+<style>
+  *{box-sizing:border-box}
+  body{font-family:Arial,sans-serif;padding:36px 48px;color:#111;font-size:13px;max-width:800px;margin:0 auto}
+  h1{font-size:20px;font-weight:800;margin:0 0 2px}
+  h2{font-size:12px;font-weight:700;color:#334155;margin:18px 0 5px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #e2e8f0;padding-bottom:3px}
+  p{margin:0 0 8px;line-height:1.5}
+  ul{margin:0;padding-left:18px}
+  li{margin-bottom:3px}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:10px 20px;margin-bottom:14px}
+  .field strong{display:block;font-size:10px;text-transform:uppercase;color:#94a3b8;margin-bottom:2px}
+  .vitais{background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:10px 14px;font-size:12px;margin-bottom:4px}
+  .header-line{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #0f172a;padding-bottom:12px;margin-bottom:16px}
+  .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}
+  .footer{margin-top:32px;padding-top:12px;border-top:1px solid #e2e8f0;font-size:10px;color:#94a3b8;text-align:center}
+  @media print{body{padding:20px 28px}@page{margin:16mm}}
+</style>
+</head><body>
+
+<div class="header-line">
+  <div>
     <h1>Prontuário Clínico</h1>
-    <p style="color:#64748b;font-size:11px">Gerado em ${new Date().toLocaleString("pt-BR")}</p>
-    <div class="row">
-      <div class="field"><strong>Paciente</strong>${c.paciente || "—"}</div>
-      <div class="field"><strong>Data</strong>${formatarData(c.data)} às ${c.hora || "—"}</div>
-      <div class="field"><strong>Profissional</strong>${c.medico || "—"}</div>
-      <div class="field"><strong>Especialidade</strong>${c.especialidade || "—"}</div>
-    </div>
-    ${vitais ? `<h2>Sinais Vitais</h2><p>${vitais}</p>` : ""}
-    ${p.anamnese ? `<h2>Anamnese</h2><p>${p.anamnese.replace(/\n/g, "<br>")}</p>` : ""}
-    ${p.exameFisico ? `<h2>Exame Físico</h2><p>${p.exameFisico.replace(/\n/g, "<br>")}</p>` : ""}
-    ${p.hipoteseDiagnostica ? `<h2>Hipótese Diagnóstica</h2><p>${p.hipoteseDiagnostica}${p.cid ? ` — CID: ${p.cid}` : ""}</p>` : ""}
-    ${p.conduta ? `<h2>Conduta</h2><p>${p.conduta.replace(/\n/g, "<br>")}</p>` : ""}
-    ${p.receita ? `<h2>Prescrição</h2><p>${p.receita.replace(/\n/g, "<br>")}</p>` : ""}
-    ${p.examesSolicitados?.length ? `<h2>Exames Solicitados</h2><ul>${p.examesSolicitados.map((e) => `<li>${e.nome}</li>`).join("")}</ul>` : ""}
-    ${p.retorno ? `<h2>Orientação de Retorno</h2><p>${p.retorno}</p>` : ""}
-    </body></html>`;
-    const w = window.open("", "_blank");
+    <p style="color:#64748b;font-size:11px;margin-top:2px">Vynor Clinic · Gerado em ${new Date().toLocaleString("pt-BR")}</p>
+  </div>
+  ${riscoHtml ? `<div>${riscoHtml}</div>` : ""}
+</div>
+
+<div class="row">
+  <div class="field"><strong>Paciente</strong>${c.paciente || "—"}</div>
+  <div class="field"><strong>Data do atendimento</strong>${formatarData(c.data)} às ${c.hora || "—"}</div>
+  <div class="field"><strong>Profissional</strong>${c.medico || "—"}</div>
+  <div class="field"><strong>Especialidade</strong>${c.especialidade || "—"}</div>
+  ${p.triagem_por ? `<div class="field"><strong>Triagem realizada por</strong>${p.triagem_por}</div>` : ""}
+  ${c.observacoes ? `<div class="field"><strong>Observações da recepção</strong>${c.observacoes}</div>` : ""}
+</div>
+
+${triagem}
+
+${vitais ? `<h2>Sinais Vitais</h2><div class="vitais">${vitais}</div>` : ""}
+
+${p.anamnese ? `<h2>Anamnese</h2><p>${p.anamnese.replace(/\n/g, "<br>")}</p>` : ""}
+${p.exameFisico ? `<h2>Exame Físico</h2><p>${p.exameFisico.replace(/\n/g, "<br>")}</p>` : ""}
+${p.hipoteseDiagnostica ? `<h2>Hipótese Diagnóstica / CID</h2><p>${p.hipoteseDiagnostica}${p.cid ? ` <span class="badge" style="background:#eff6ff;color:#2563eb">CID: ${p.cid}</span>` : ""}</p>` : ""}
+${p.conduta ? `<h2>Conduta</h2><p>${p.conduta.replace(/\n/g, "<br>")}</p>` : ""}
+${p.receita ? `<h2>Prescrição</h2><p style="font-family:monospace">${p.receita.replace(/\n/g, "<br>")}</p>` : ""}
+${p.examesSolicitados?.length ? `<h2>Exames Solicitados</h2><ul>${p.examesSolicitados.map((e) => `<li>${e.nome}${e.justificativa ? ` — ${e.justificativa}` : ""}</li>`).join("")}</ul>` : ""}
+${p.retorno ? `<h2>Orientação de Retorno</h2><p>${p.retorno}</p>` : ""}
+${p.observacoes_enfermagem ? `<h2>Observações de Enfermagem</h2><p>${p.observacoes_enfermagem.replace(/\n/g, "<br>")}</p>` : ""}
+
+<div class="footer">
+  Documento gerado pelo sistema Vynor Clinic · Uso exclusivo da equipe de saúde · Não substitui laudo médico oficial
+</div>
+
+<script>window.onload = () => window.print();</script>
+</body></html>`;
+
+    const w = window.open("", "_blank", "width=800,height=700");
     w.document.write(html);
     w.document.close();
-    w.print();
   }
 
   // ── DETALHE DO PRONTUÁRIO ──────────────────────────────────────────────────────
@@ -308,6 +365,8 @@ export default function Prontuario({ consultas = [], atendimentosOdonto = [], pa
 
     const vitaisPreenchidos = [p.pressaoSistolica, p.frequenciaCardiaca, p.temperatura, p.peso, p.saturacaoO2].filter(Boolean);
 
+    const isOdonto = /odont|dental/i.test(selecionado.especialidade || "");
+
     const abas = [
       { key: "resumo", label: "Resumo" },
       { key: "clinico", label: "Ficha Clínica" },
@@ -315,7 +374,7 @@ export default function Prontuario({ consultas = [], atendimentosOdonto = [], pa
       { key: "exames", label: "Exames", badge: (p.examesSolicitados || []).length },
       { key: "documentos", label: "Documentos" },
       { key: "timeline", label: "Timeline" },
-      { key: "odonto", label: "🦷 Odonto", badge: historicoOdonto.length },
+      ...(isOdonto ? [{ key: "odonto", label: "🦷 Odonto", badge: historicoOdonto.length }] : []),
     ];
 
     return (
@@ -387,6 +446,25 @@ export default function Prontuario({ consultas = [], atendimentosOdonto = [], pa
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Aviso de prontuário finalizado */}
+        {normStatus(selecionado.status) === "finalizado" && (
+          <div style={{ display: "flex", alignItems: "flex-start", gap: "10px", padding: "10px 14px", borderRadius: "10px", background: "#fafafa", border: "1px solid #e2e8f0" }}>
+            <span style={{ fontSize: "16px", flexShrink: 0 }}>🔒</span>
+            <div>
+              <span style={{ fontSize: "13px", fontWeight: 700, color: "#374151" }}>Atendimento finalizado</span>
+              <span style={{ fontSize: "12px", color: "#6b7280", marginLeft: "6px" }}>Este prontuário está encerrado. Alterações requerem justificativa clínica.</span>
+            </div>
+          </div>
+        )}
+
+        {/* CID em destaque se presente */}
+        {p.cid && (
+          <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", padding: "5px 12px", borderRadius: "999px", background: "#eff6ff", border: "1px solid #bfdbfe", alignSelf: "flex-start" }}>
+            <span style={{ fontSize: "11px", fontWeight: 700, color: "#1d4ed8" }}>CID-10</span>
+            <span style={{ fontSize: "13px", fontWeight: 800, color: "#1e40af" }}>{p.cid}</span>
           </div>
         )}
 
@@ -568,7 +646,7 @@ export default function Prontuario({ consultas = [], atendimentosOdonto = [], pa
                 ) : (
                   <div style={{ position: "relative", paddingLeft: "28px" }}>
                     <div style={{ position: "absolute", left: "10px", top: 0, bottom: 0, width: "2px", background: "#e2e8f0" }} />
-                    {timeline.map((ev, i) => {
+                    {timeline.map((ev) => {
                       const isMed = ev.tipo === "medico";
                       const isAtual = ev.original?.id === selecionado?.id;
                       return (
@@ -687,22 +765,6 @@ export default function Prontuario({ consultas = [], atendimentosOdonto = [], pa
         </div>
       </div>
 
-      {/* KPIs */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "12px" }}>
-        {[
-          { label: "PRONTUÁRIOS", valor: prontuarios.length, sub: "Registros finalizados", cor: "#6366f1" },
-          { label: "PACIENTES", valor: totalPacientes, sub: "Com histórico clínico", cor: "#2563eb" },
-          { label: "PROFISSIONAIS", valor: totalProfissionais, sub: "Com registros vinculados", cor: "#0f766e" },
-          { label: "ESPECIALIDADES", valor: totalEspecialidades, sub: "Áreas registradas", cor: "#d97706" },
-        ].map((k) => (
-          <div key={k.label} style={{ ...S.card, padding: "16px" }}>
-            <div style={{ fontSize: "10px", fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: ".06em" }}>{k.label}</div>
-            <div style={{ fontSize: "28px", fontWeight: 800, color: k.cor, margin: "4px 0" }}>{k.valor}</div>
-            <div style={{ fontSize: "11px", color: "#94a3b8" }}>{k.sub}</div>
-          </div>
-        ))}
-      </div>
-
       {/* Filtros */}
       <div style={{ ...S.card, display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center", padding: "14px 18px" }}>
         <input
@@ -742,9 +804,9 @@ export default function Prontuario({ consultas = [], atendimentosOdonto = [], pa
             </p>
           </div>
         ) : (
-          filtrados.map((c) => {
+          filtrados.slice(0, visiveis).map((c) => {
             const p = c.prontuario || {};
-            const idMed = dadosPaciente?.dataNascimento ? calcularIdade(dadosPaciente.dataNascimento) : null;
+            // const idMed = dadosPaciente?.dataNascimento ? calcularIdade(dadosPaciente.dataNascimento) : null;
             return (
               <div
                 key={c.id}
@@ -806,6 +868,24 @@ export default function Prontuario({ consultas = [], atendimentosOdonto = [], pa
               </div>
             );
           })
+        )}
+        {filtrados.length > visiveis && (
+          <button
+            onClick={() => setVisiveis((v) => v + 20)}
+            style={{
+              marginTop: 4, padding: "12px", borderRadius: "12px",
+              border: "1px dashed #cbd5e1", background: "#f8fafc",
+              color: "#475569", fontWeight: 600, fontSize: "13px",
+              cursor: "pointer", width: "100%",
+            }}
+          >
+            Carregar mais {Math.min(20, filtrados.length - visiveis)} de {filtrados.length - visiveis} restantes
+          </button>
+        )}
+        {filtrados.length > 0 && visiveis >= filtrados.length && filtrados.length > 20 && (
+          <p style={{ textAlign: "center", fontSize: "12px", color: "#94a3b8", margin: "4px 0 0" }}>
+            Todos os {filtrados.length} prontuários exibidos.
+          </p>
         )}
       </div>
     </div>

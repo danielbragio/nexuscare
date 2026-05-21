@@ -1,798 +1,1145 @@
 import { useEffect, useMemo, useState } from "react";
+import { hojeISO } from "../utils/dateUtils";
+import AlertaBanner from "../components/AlertaBanner";
+import api from "../services/api";
+import {
+  isFaturamentoConfirmado,
+  isPagamentoPendente,
+  valorCanonicoPagamento,
+} from "../utils/financeUtils";
 
-// ── Pure helpers ──────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-function normalizarTexto(valor) {
-  return String(valor || "").trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+function normalizarTexto(v) {
+  return String(v || "").trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 }
 function obterNomePaciente(item) {
-  return item?.paciente || item?.nomePaciente || item?.nome || item?.patientName || "Paciente não informado";
+  return item?.paciente || item?.nomePaciente || item?.nome || item?.patientName || "Paciente";
 }
 function obterMedico(item) {
-  return item?.medico || item?.nomeMedico || item?.profissional || item?.doctorName || "Sem médico definido";
-}
-function obterConsultorio(item) {
-  const valor = item?.consultorio || item?.sala || item?.consultorioNumero || item?.room || "";
-  const numero = String(valor).replace(/\D/g, "");
-  return numero ? Number(numero) : null;
-}
-function hojeISO() {
-  const a = new Date();
-  return `${a.getFullYear()}-${String(a.getMonth() + 1).padStart(2, "0")}-${String(a.getDate()).padStart(2, "0")}`;
-}
-function calcularMinutos(data, hora) {
-  if (!data || !hora) return 0;
-  const chegada = new Date(`${data}T${hora}`);
-  const agora = new Date();
-  if (Number.isNaN(chegada.getTime())) return 0;
-  const diff = Math.floor((agora - chegada) / 60000);
-  return diff > 0 ? diff : 0;
-}
-function formatarTempo(minutos) {
-  const total = Number(minutos || 0);
-  if (total < 60) return `${total} min`;
-  const h = Math.floor(total / 60);
-  const m = total % 60;
-  return `${h}h${m > 0 ? ` ${m}min` : ""}`;
+  return item?.medico || item?.nomeMedico || item?.profissional || "—";
 }
 function formatarMoeda(valor) {
   return Number(valor || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
-function statusOperacional(status) {
+function statusOp(status) {
   const t = normalizarTexto(status);
-  if (!t || t === "cadastro" || t === "chegada" || t === "recepcionado" || t === "recepcao") return "chegada";
-  if (t === "agendada" || t === "agendado" || t === "aguardando" || t === "aguardando atendimento" || t === "aguardando medico" || t === "espera") return "aguardando";
-  if (t === "em atendimento" || t === "atendimento" || t === "atendendo") return "atendimento";
-  if (t === "finalizado" || t === "finalizada" || t === "concluido" || t === "concluida" || t === "encerrado") return "finalizado";
-  return "chegada";
+  if (t.includes("aguard") || t === "espera" || t === "presente") return "aguardando";
+  if (t === "agendado" || t === "agendada" || t === "confirmado" || t === "confirmada") return "agendado";
+  if (t.includes("atend")) return "atendimento";
+  if (t.includes("finaliz") || t.includes("conclui")) return "finalizado";
+  if (t.includes("cancel") || t === "faltou") return "cancelado";
+  return "agendado";
+}
+function smoothPath(pts) {
+  if (pts.length < 2) return "";
+  let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[Math.min(pts.length - 1, i + 2)];
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = p1.y + (p2.y - p0.y) / 6;
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C ${cp1x.toFixed(2)} ${cp1y.toFixed(2)}, ${cp2x.toFixed(2)} ${cp2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
+  }
+  return d;
 }
 
-// ── SVG icons ─────────────────────────────────────────────────────────────────
+// ── Tokens roxo Vynor (alinhados ao sistema) ──────────────────────────────────
 
-function IconUser({ color = "#64748b", size = 16 }) {
+const P = "#7C3AED";
+const PL = "#EDE9FE";
+const PD = "#6D28D9";
+const PBG = "#F5F3FF";
+
+// ── SVG Area Chart (roxo) ─────────────────────────────────────────────────────
+
+function AreaChart({ dados }) {
+  const [hov, setHov] = useState(null);
+  const W = 600, H = 190, pL = 34, pR = 14, pT = 14, pB = 36;
+  const iW = W - pL - pR, iH = H - pT - pB;
+  const maxVal = Math.max(...dados.map((d) => d.valor), 1);
+
+  const pts = dados.map((d, i) => ({
+    x: pL + (dados.length < 2 ? iW / 2 : (i / (dados.length - 1)) * iW),
+    y: pT + (1 - d.valor / maxVal) * iH,
+    ...d,
+  }));
+
+  const linePath = smoothPath(pts);
+  const areaPath =
+    pts.length > 1
+      ? `${linePath} L${pts[pts.length - 1].x.toFixed(2)} ${(pT + iH).toFixed(2)} L${pts[0].x.toFixed(2)} ${(pT + iH).toFixed(2)} Z`
+      : "";
+
   return (
-    <svg width={size} height={size} fill="none" stroke={color} strokeWidth="2" viewBox="0 0 24 24">
-      <circle cx="12" cy="7" r="4" /><path d="M5.5 20a6.5 6.5 0 0 1 13 0" />
-    </svg>
-  );
-}
-function IconActivity({ color = "#64748b", size = 16 }) {
-  return (
-    <svg width={size} height={size} fill="none" stroke={color} strokeWidth="2" viewBox="0 0 24 24">
-      <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
-    </svg>
-  );
-}
-function IconClock({ color = "#64748b", size = 16 }) {
-  return (
-    <svg width={size} height={size} fill="none" stroke={color} strokeWidth="2" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 3" />
-    </svg>
-  );
-}
-function IconDollar({ color = "#64748b", size = 16 }) {
-  return (
-    <svg width={size} height={size} fill="none" stroke={color} strokeWidth="2" viewBox="0 0 24 24">
-      <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
-    </svg>
-  );
-}
-function IconCheck({ color = "#16a34a", size = 14 }) {
-  return (
-    <svg width={size} height={size} fill="none" stroke={color} strokeWidth="2.5" viewBox="0 0 24 24">
-      <polyline points="20 6 9 17 4 12" />
-    </svg>
-  );
-}
-function IconWarning({ color = "#dc2626", size = 15 }) {
-  return (
-    <svg width={size} height={size} fill="none" stroke={color} strokeWidth="2" viewBox="0 0 24 24">
-      <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-      <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
-    </svg>
-  );
-}
-function IconTooth({ color = "#0f766e", size = 15 }) {
-  return (
-    <svg width={size} height={size} fill="none" stroke={color} strokeWidth="2" viewBox="0 0 24 24">
-      <path d="M12 2c-4 0-7 3-7 6.5 0 2.5.5 4 1.5 6C8 18 9.5 22 12 22s4-4 4.5-7.5C17.5 12.5 18 11 18 8.5 18 5 15 2 12 2z" />
-    </svg>
+    <div style={{ width: "100%" }}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block", overflow: "visible" }}>
+        <defs>
+          <linearGradient id="dashAreaGradP" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={P} stopOpacity="0.18" />
+            <stop offset="100%" stopColor={P} stopOpacity="0.01" />
+          </linearGradient>
+        </defs>
+
+        {[0, 0.5, 1].map((pct, i) => {
+          const y = pT + pct * iH;
+          return (
+            <g key={i}>
+              <line x1={pL} y1={y} x2={W - pR} y2={y} stroke="#f1f5f9" strokeWidth="1" />
+              <text x={pL - 5} y={y + 4} fontSize="9" fill="#94a3b8" textAnchor="end">
+                {Math.round(maxVal * (1 - pct))}
+              </text>
+            </g>
+          );
+        })}
+
+        {areaPath && <path d={areaPath} fill="url(#dashAreaGradP)" />}
+        {linePath && (
+          <path d={linePath} fill="none" stroke={P} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        )}
+
+        {pts.map((pt, i) => {
+          const isH = hov === i;
+          const tipX = Math.max(pL, Math.min(pt.x - 36, W - pR - 72));
+          return (
+            <g key={i}>
+              {isH && (
+                <>
+                  <line x1={pt.x} y1={pT} x2={pt.x} y2={pT + iH} stroke="#e2e8f0" strokeWidth="1" strokeDasharray="4 3" />
+                  <rect x={tipX} y={pt.y - 34} width="72" height="24" rx="8" fill="#1e1b4b" />
+                  <text x={tipX + 36} y={pt.y - 17} fontSize="11" fill="#fff" textAnchor="middle" fontWeight="600">
+                    {pt.valor} consultas
+                  </text>
+                </>
+              )}
+              <circle
+                cx={pt.x} cy={pt.y} r={isH ? 6 : 4}
+                fill={isH ? P : "#fff"} stroke={P} strokeWidth="2.5"
+                style={{ cursor: "pointer" }}
+                onMouseEnter={() => setHov(i)}
+                onMouseLeave={() => setHov(null)}
+              />
+              <text x={pt.x} y={H - 4} fontSize="10" fill="#94a3b8" textAnchor="middle">{pt.label}</text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
   );
 }
 
-// ── Mini bar chart (7-day receita) ────────────────────────────────────────────
+// ── SVG Donut Chart (tons de roxo) ────────────────────────────────────────────
 
-function MiniBarChart({ dados, hoje }) {
-  const maxVal = Math.max(...dados.map((d) => d.valor), 0.01);
+function DonutChart({ segments, total }) {
+  const R = 56, CX = 72, CY = 72;
+  const circ = 2 * Math.PI * R;
+
+  const segs = segments.map((s, i) => {
+    const cumulativeBefore = segments
+      .slice(0, i)
+      .reduce((sum, ps) => sum + (total > 0 ? ps.valor / total : 0), 0);
+    const pct = total > 0 ? s.valor / total : 0;
+    return {
+      ...s,
+      dash: circ * pct,
+      offset: circ * (0.25 - cumulativeBefore),
+    };
+  });
+
   return (
-    <div style={{ display: "flex", alignItems: "flex-end", gap: "5px", height: "60px", padding: "0 2px" }}>
-      {dados.map((d) => {
-        const pct = (d.valor / maxVal) * 50;
-        const isHoje = d.data === hoje;
-        return (
-          <div key={d.data} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: "3px" }}>
-            <div
-              title={`${d.label}: ${formatarMoeda(d.valor)}`}
-              style={{
-                width: "100%",
-                height: `${Math.max(pct, d.valor > 0 ? 4 : 1)}px`,
-                background: isHoje ? "#0f766e" : "rgba(15,118,110,0.25)",
-                borderRadius: "3px 3px 0 0",
-              }}
+    <div style={{ display: "flex", alignItems: "center", gap: "24px" }}>
+      <div style={{ flexShrink: 0 }}>
+        <svg width="144" height="144" viewBox="0 0 144 144">
+          <circle cx={CX} cy={CY} r={R} fill="none" stroke="#f1f5f9" strokeWidth="20" />
+          {segs.map((s, i) => (
+            <circle
+              key={i} cx={CX} cy={CY} r={R}
+              fill="none" stroke={s.color} strokeWidth="20"
+              strokeDasharray={`${s.dash} ${circ}`}
+              strokeDashoffset={s.offset}
+              strokeLinecap="butt"
             />
-            <span style={{
-              fontSize: "9px",
-              color: isHoje ? "#0f766e" : "#cbd5e1",
-              fontWeight: isHoje ? 700 : 400,
-              whiteSpace: "nowrap",
-            }}>
-              {d.label}
+          ))}
+          <text x={CX} y={CY - 6} textAnchor="middle" fontSize="20" fontWeight="800" fill="#0f172a">
+            {total}
+          </text>
+          <text x={CX} y={CY + 14} textAnchor="middle" fontSize="11" fill="#64748b">Total</text>
+        </svg>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "9px" }}>
+        {segments.map((s, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: s.color, flexShrink: 0 }} />
+            <span style={{ fontSize: "12px", color: "#374151", flex: 1 }}>{s.label}</span>
+            <span style={{ fontSize: "11px", color: "#64748b" }}>
+              {s.valor} ({total > 0 ? Math.round((s.valor / total) * 100) : 0}%)
             </span>
           </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ── Kanban patient card ───────────────────────────────────────────────────────
-
-function PatientCard({ item }) {
-  const alerta = item.tempoEspera >= 60;
-  return (
-    <div style={{
-      background: "#fff",
-      border: `1px solid ${alerta ? "#fed7aa" : "#e5e7eb"}`,
-      borderLeft: `3px solid ${alerta ? "#f97316" : "#e2e8f0"}`,
-      borderRadius: "10px",
-      padding: "9px 11px",
-      boxShadow: "0 1px 3px rgba(15,23,42,0.04)",
-    }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "4px", marginBottom: "5px" }}>
-        <span style={{ fontSize: "12px", fontWeight: 700, color: "#0f172a", lineHeight: 1.3, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {item.nomePaciente}
-        </span>
-        {item.tempoEspera > 0 && (
-          <span style={{
-            fontSize: "10px", fontWeight: 700, padding: "1px 6px", borderRadius: "999px",
-            background: alerta ? "#fff7ed" : "#f1f5f9",
-            color: alerta ? "#c2410c" : "#64748b",
-            flexShrink: 0,
-          }}>
-            {formatarTempo(item.tempoEspera)}
-          </span>
-        )}
-      </div>
-      <div style={{ fontSize: "11px", color: "#64748b" }}>
-        <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {item.medico !== "Sem médico definido" ? item.medico : "—"}
-        </div>
-        {item.tipoAtendimento && (
-          <div style={{ color: "#94a3b8", marginTop: "2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {item.tipoAtendimento}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ── Kanban column ─────────────────────────────────────────────────────────────
-
-const COLUNA_CFG = {
-  chegada:     { label: "Recepção",       accent: "#6366f1", headerBg: "#f5f3ff", dot: "#a5b4fc" },
-  aguardando:  { label: "Aguardando",     accent: "#f59e0b", headerBg: "#fffbeb", dot: "#fcd34d" },
-  atendimento: { label: "Em atendimento", accent: "#0f766e", headerBg: "#f0fdf9", dot: "#6ee7b7" },
-  finalizado:  { label: "Finalizados",    accent: "#16a34a", headerBg: "#f0fdf4", dot: "#86efac" },
-};
-
-function ColunaKanban({ tipo, lista }) {
-  const cfg = COLUNA_CFG[tipo];
-  return (
-    <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-      <div style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "8px 10px",
-        background: cfg.headerBg,
-        borderRadius: "9px 9px 0 0",
-        borderBottom: `2px solid ${cfg.accent}22`,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: cfg.dot, flexShrink: 0 }} />
-          <span style={{ fontSize: "11px", fontWeight: 700, color: cfg.accent }}>{cfg.label}</span>
-        </div>
-        <span style={{
-          minWidth: "20px", height: "20px", padding: "0 5px",
-          borderRadius: "999px", background: cfg.accent, color: "#fff",
-          fontSize: "10px", fontWeight: 800,
-          display: "inline-flex", alignItems: "center", justifyContent: "center",
-        }}>
-          {lista.length}
-        </span>
-      </div>
-      <div style={{
-        flex: 1, overflowY: "auto", padding: "7px",
-        display: "flex", flexDirection: "column", gap: "5px",
-        background: "#fafafa",
-        borderRadius: "0 0 9px 9px",
-        border: "1px solid #e5e7eb", borderTop: "none",
-        minHeight: "110px", maxHeight: "340px",
-      }}>
-        {lista.length === 0 ? (
-          <div style={{ textAlign: "center", color: "#cbd5e1", fontSize: "11px", padding: "16px 0", userSelect: "none" }}>
-            Sem pacientes
-          </div>
-        ) : lista.map((item, i) => (
-          <PatientCard key={item.id || i} item={item} />
         ))}
       </div>
     </div>
   );
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
+// ── Circular Gauge (roxo) ─────────────────────────────────────────────────────
+
+function CircularGauge({ pct }) {
+  const R = 26, circ = 2 * Math.PI * R;
+  const dash = (pct / 100) * circ;
+  const color = pct >= 80 ? "#16a34a" : pct >= 60 ? "#f59e0b" : "#dc2626";
+  return (
+    <svg width="68" height="68" viewBox="0 0 68 68">
+      <circle cx="34" cy="34" r={R} fill="none" stroke={PL} strokeWidth="6" />
+      <circle
+        cx="34" cy="34" r={R} fill="none" stroke={color} strokeWidth="6"
+        strokeDasharray={`${dash} ${circ}`} strokeDashoffset={circ * 0.25}
+        strokeLinecap="round"
+        style={{ transform: "rotate(-90deg)", transformOrigin: "34px 34px" }}
+      />
+      <text x="34" y="38" textAnchor="middle" fontSize="13" fontWeight="800" fill="#0f172a">{pct}%</text>
+    </svg>
+  );
+}
+
+// ── Calendar (roxo) ───────────────────────────────────────────────────────────
+
+function CalendarWidget({ consultas, onSelectDate }) {
+  const today = new Date();
+  const [year, setYear] = useState(today.getFullYear());
+  const [month, setMonth] = useState(today.getMonth());
+  const [sel, setSel] = useState(hojeISO());
+  const todayISO = hojeISO();
+
+  const daysWithAppt = useMemo(() => {
+    const s = new Set();
+    consultas.forEach((c) => {
+      const d = c.data || "";
+      if (d) s.add(String(d).slice(0, 10));
+    });
+    return s;
+  }, [consultas]);
+
+  const firstDow = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const monthLabel = new Date(year, month, 1).toLocaleDateString("pt-BR", {
+    month: "long",
+    year: "numeric",
+  });
+
+  function prev() {
+    if (month === 0) { setMonth(11); setYear((y) => y - 1); }
+    else setMonth((m) => m - 1);
+  }
+  function next() {
+    if (month === 11) { setMonth(0); setYear((y) => y + 1); }
+    else setMonth((m) => m + 1);
+  }
+  function pick(d) {
+    const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    setSel(iso);
+    onSelectDate?.(iso);
+  }
+
+  const cells = [];
+  for (let i = 0; i < firstDow; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+        <span style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a", textTransform: "capitalize" }}>
+          {monthLabel}
+        </span>
+        <div style={{ display: "flex", gap: "4px" }}>
+          {[["‹", prev], ["›", next]].map(([ch, fn]) => (
+            <button
+              key={ch} onClick={fn}
+              style={{
+                width: "26px", height: "26px", borderRadius: "6px",
+                border: "1px solid #e2e8f0", background: "#fff",
+                cursor: "pointer", color: "#64748b", fontSize: "15px",
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}
+            >{ch}</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "2px", marginBottom: "4px" }}>
+        {["D", "S", "T", "Q", "Q", "S", "S"].map((d, i) => (
+          <div key={i} style={{ textAlign: "center", fontSize: "10px", fontWeight: 600, color: "#94a3b8" }}>{d}</div>
+        ))}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "2px" }}>
+        {cells.map((d, i) => {
+          if (!d) return <div key={i} />;
+          const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+          const isSel = iso === sel;
+          const isToday = iso === todayISO;
+          const hasAppt = daysWithAppt.has(iso);
+          return (
+            <div
+              key={i}
+              onClick={() => pick(d)}
+              style={{
+                height: "32px", display: "flex", flexDirection: "column",
+                alignItems: "center", justifyContent: "center",
+                borderRadius: "7px", cursor: "pointer",
+                background: isSel ? P : isToday ? PL : "transparent",
+                color: isSel ? "#fff" : isToday ? PD : "#374151",
+                fontWeight: isSel || isToday ? 700 : 400,
+                fontSize: "12px", position: "relative",
+                transition: "background 0.1s",
+              }}
+            >
+              {d}
+              {hasAppt && (
+                <span style={{
+                  position: "absolute", bottom: "3px",
+                  width: "4px", height: "4px", borderRadius: "50%",
+                  background: isSel ? "rgba(255,255,255,0.8)" : P,
+                }} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Status badge ──────────────────────────────────────────────────────────────
+
+function StatusBadge({ status }) {
+  const MAP = {
+    finalizado:  { label: "Finalizado",    bg: "#dcfce7", color: "#16a34a" },
+    agendado:    { label: "Agendado",      bg: "#f1f5f9", color: "#64748b" },
+    confirmado:  { label: "Confirmado",    bg: "#dcfce7", color: "#16a34a" },
+    aguardando:  { label: "Aguardando",    bg: "#fef9c3", color: "#854d0e" },
+    atendimento: { label: "Em atend.",     bg: "#dbeafe", color: "#1d4ed8" },
+    cancelado:   { label: "Cancelado",     bg: "#fee2e2", color: "#991b1b" },
+  };
+  const cfg = MAP[status] || MAP.agendado;
+  return (
+    <span style={{
+      fontSize: "10px", fontWeight: 700, padding: "3px 8px",
+      borderRadius: "999px", background: cfg.bg, color: cfg.color,
+      whiteSpace: "nowrap", flexShrink: 0,
+    }}>
+      {cfg.label}
+    </span>
+  );
+}
+
+// ── Trend arrow ───────────────────────────────────────────────────────────────
+
+function Trend({ pct }) {
+  if (pct === null || pct === undefined) return null;
+  const up = pct >= 0;
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: "2px", fontSize: "11px", fontWeight: 700, color: up ? "#16a34a" : "#dc2626" }}>
+      <svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+        {up ? <polyline points="18 15 12 9 6 15" /> : <polyline points="6 9 12 15 18 9" />}
+      </svg>
+      {Math.abs(pct)}%
+    </span>
+  );
+}
+
+// ── summaryCard helper (plain function, não componente) ───────────────────────
+
+function summaryCard(label, value, sub, trend, icon, iconBg, gauge) {
+  return (
+    <div className="page-card" style={{ padding: "20px", transition: "box-shadow 0.15s" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "12px" }}>
+        <p style={{ margin: 0, fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+          {label}
+        </p>
+        {gauge !== undefined ? (
+          <CircularGauge pct={gauge} />
+        ) : (
+          <div style={{ width: "40px", height: "40px", borderRadius: "10px", background: iconBg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            {icon}
+          </div>
+        )}
+      </div>
+      <div style={{ fontSize: gauge !== undefined ? "22px" : "32px", fontWeight: 800, color: "#0f172a", letterSpacing: "-0.04em", lineHeight: 1, marginBottom: "6px" }}>
+        {value}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+        {trend !== null && <Trend pct={trend} />}
+        <span style={{ fontSize: "11px", color: "#94a3b8" }}>{sub}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Main Dashboard ────────────────────────────────────────────────────────────
 
 export default function Dashboard({
   consultas = [],
   pagamentos = [],
+  pacientes = [],
   atendimentosOdonto = [],
-  estoque = [],
-  onIrParaEstoque,
+  indicadores = {},
+  userData,
+  onNavigate,
   onIrParaFinanceiro,
-  onIrParaPagamentos,
   onIrParaRelatorios,
 }) {
-  const [agora, setAgora] = useState(new Date());
-
-  useEffect(() => {
-    const timer = setInterval(() => setAgora(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
+  const [selectedDate, setSelectedDate] = useState(hojeISO());
   const dataHoje = hojeISO();
 
-  // ── consultas tratadas
-  const consultasTratadas = useMemo(() => {
-    return consultas.map((item) => ({
-      ...item,
-      statusOperacional: statusOperacional(item.status),
-      nomePaciente: obterNomePaciente(item),
-      medico: obterMedico(item),
-      consultorio: obterConsultorio(item),
-      tipoAtendimento: item.tipoAtendimento || item.tipo || item.servico || item.especialidade || "Atendimento",
-      tempoEspera: calcularMinutos(item.data, item.hora),
-    }));
-  }, [consultas, agora]);
+  // ── KPIs e alertas do backend (uma única requisição) ─────────────────────
+  const [alertasBackend, setAlertasBackend] = useState([]);
+  const [kpisBackend, setKpisBackend] = useState(null);
+  // KPIs financeiros UNIFICADOS — fonte de verdade do Resumo financeiro.
+  // Usa `/financeiro/kpis-unificados` no MÊS CORRENTE (mesmo período do card principal).
+  const [kpisFinUnificado, setKpisFinUnificado] = useState(null);
+  const [kpisFinErro, setKpisFinErro] = useState(false);
 
-  const chegada = consultasTratadas.filter((i) => i.statusOperacional === "chegada");
-  const aguardando = consultasTratadas.filter((i) => i.statusOperacional === "aguardando");
-  const emAtendimento = consultasTratadas.filter((i) => i.statusOperacional === "atendimento");
-  const finalizados = consultasTratadas.filter((i) => i.statusOperacional === "finalizado");
-  const finalizadosHoje = finalizados.filter((i) => !i.data || i.data === dataHoje);
+  useEffect(() => {
+    let cancelled = false;
+    api.dashboard.kpis()
+      .then((res) => {
+        if (cancelled) return;
+        if (Array.isArray(res?.data?.alertas)) setAlertasBackend(res.data.alertas);
+        if (res?.data?.kpis) setKpisBackend(res.data.kpis);
+      })
+      .catch(() => { /* falha silenciosa — KPIs locais ainda funcionam */ });
 
-  // ── KPI: tempo médio
-  const tempoMedioAtendimento = useMemo(() => {
-    const ativos = [...emAtendimento, ...finalizadosHoje].filter((i) => i.tempoEspera > 0);
-    if (!ativos.length) return 0;
-    return Math.round(ativos.reduce((t, i) => t + i.tempoEspera, 0) / ativos.length);
-  }, [emAtendimento, finalizadosHoje]);
+    // Resumo financeiro vem do endpoint unificado. Fallback: cálculo local.
+    const hoje = new Date();
+    const inicio = `${hoje.getFullYear()}-${String(hoje.getMonth()+1).padStart(2,'0')}-01`;
+    const fimDate = new Date(hoje.getFullYear(), hoje.getMonth()+1, 0);
+    const fim = `${fimDate.getFullYear()}-${String(fimDate.getMonth()+1).padStart(2,'0')}-${String(fimDate.getDate()).padStart(2,'0')}`;
+    api.financeiro.kpisUnificados({ inicio, fim })
+      .then((res) => {
+        if (cancelled) return;
+        if (res?.data?.totais) setKpisFinUnificado(res.data);
+      })
+      .catch(() => { if (!cancelled) setKpisFinErro(true); });
 
-  // ── KPI: receita do dia
-  const receitaHoje = useMemo(() => {
+    return () => { cancelled = true; };
+  }, []);
+
+  const firstName =
+    userData?.nome?.split(" ")[0] ||
+    userData?.username ||
+    userData?.login ||
+    "Usuário";
+  const dataFormatada = new Date().toLocaleDateString("pt-BR", {
+    weekday: "long", day: "numeric", month: "long",
+  });
+
+  function nav(v) { onNavigate?.(v); }
+
+  // ── KPI: Pacientes ativos
+  const totalPacientes = useMemo(() => {
+    if (kpisBackend?.pacientes_ativos != null) return kpisBackend.pacientes_ativos;
+    if (pacientes.length > 0) return pacientes.filter((p) => p.ativo !== false).length;
+    return indicadores.totalPacientes || 0;
+  }, [pacientes, indicadores, kpisBackend]);
+
+  // ── KPI: Consultas este mês
+  const consultasMes = useMemo(() => {
+    if (kpisBackend?.consultas_mes != null) return kpisBackend.consultas_mes + (kpisBackend.consultas_odonto_mes ?? 0);
+    const d = new Date();
+    const mes = d.getMonth(), ano = d.getFullYear();
+    return [...consultas, ...atendimentosOdonto].filter((c) => {
+      const dt = new Date((c.data || "") + "T00:00:00");
+      return dt.getMonth() === mes && dt.getFullYear() === ano;
+    }).length;
+  }, [consultas, atendimentosOdonto, kpisBackend]);
+
+  // ── KPI: Faturamento este mês (fonte de verdade unificada — prioriza endpoint unificado).
+  // Critério: pagos + cortesia, no mês, usando valor canônico (valorFinal ?? valor-desconto).
+  const faturamentoMes = useMemo(() => {
+    // Prioridade 1: endpoint unificado (mesma fonte do Resumo financeiro).
+    if (kpisFinUnificado?.totais?.receita_confirmada != null) {
+      return Number(kpisFinUnificado.totais.receita_confirmada);
+    }
+    // Prioridade 2: Dashboard KPI (compat com backend antigo).
+    if (kpisBackend?.faturamento_mes != null) return kpisBackend.faturamento_mes;
+    // Prioridade 3: fallback local.
+    const d = new Date();
+    const mes = d.getMonth(), ano = d.getFullYear();
     return pagamentos
       .filter((p) => {
-        const status = normalizarTexto(p.statusPagamento || p.status || "");
-        const data = p.dataPagamento || p.data || p.createdAt;
-        return (status === "pago" || status === "paga") && (!data || String(data).slice(0, 10) === dataHoje);
+        if (!isFaturamentoConfirmado(p)) return false;
+        const dt = new Date((p.dataPagamento || p.data || "") + "T00:00:00");
+        return dt.getMonth() === mes && dt.getFullYear() === ano;
       })
-      .reduce((t, p) => t + Number(p.valor || 0), 0);
-  }, [pagamentos, dataHoje]);
+      .reduce((t, p) => t + valorCanonicoPagamento(p), 0);
+  }, [kpisFinUnificado, pagamentos, kpisBackend]);
 
-  // ── Receita 7 dias (chart)
-  const chartDados = useMemo(() => {
-    const dias = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      dias.push({
-        data: iso,
-        label: d.toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", "").slice(0, 3),
-        valor: pagamentos
-          .filter((p) => {
-            const s = normalizarTexto(p.statusPagamento || p.status || "");
-            return (s === "pago" || s === "paga") && (p.dataPagamento || p.data || "").slice(0, 10) === iso;
-          })
-          .reduce((t, p) => t + Number(p.valor || 0), 0),
-      });
-    }
-    return dias;
-  }, [pagamentos]);
-
-  // ── Resumo financeiro do mês
-  const resumoFinanceiro = useMemo(() => {
-    const hoje = new Date();
-    const mes = hoje.getMonth(), ano = hoje.getFullYear();
-    const isPago = (p) => ["pago", "paga"].includes((p.statusPagamento || p.status || "").toLowerCase());
-    const isPend = (p) => ["pendente", "aguardando"].includes((p.statusPagamento || p.status || "").toLowerCase());
-    const receitaMes = pagamentos
-      .filter((p) => {
-        const d = new Date(`${(p.dataPagamento || p.data || "").slice(0, 10)}T00:00:00`);
-        return isPago(p) && d.getMonth() === mes && d.getFullYear() === ano;
-      })
-      .reduce((t, p) => t + Number(p.valor || 0), 0);
-    const totalPendente = pagamentos.filter(isPend).reduce((t, p) => t + Number(p.valor || 0), 0);
-    const qtdPendente = pagamentos.filter(isPend).length;
-    return { receitaMes, totalPendente, qtdPendente };
-  }, [pagamentos]);
-
-  // ── Odonto
-  const odontoAguardando = atendimentosOdonto.filter((a) => a.status === "aguardando").length;
-  const odontoEmAtendimento = atendimentosOdonto.filter((a) => a.status === "em_atendimento").length;
-  const odontoFinalizados = atendimentosOdonto.filter((a) => a.status === "finalizado").length;
-  const receitaOdonto = useMemo(() => {
-    return (
-      pagamentos
-        .filter((p) => {
-          const o = normalizarTexto(p.origem || p.tipo || "");
-          const s = normalizarTexto(p.statusPagamento || p.status || "");
-          return o === "odonto" && (s === "pago" || s === "paga");
-        })
-        .reduce((t, p) => t + Number(p.valor || p.valorFinal || 0), 0) +
-      atendimentosOdonto
-        .filter((a) => {
-          if (a.pagamentoId) return false;
-          const st = normalizarTexto(a.statusPagamento || a.financeiro?.statusFinanceiro || "");
-          return st === "pago" || st === "paga";
-        })
-        .reduce((t, a) => t + Number(a.valorFinal || 0), 0)
+  // ── KPI: Taxa de ocupação (finalizados / total hoje)
+  const taxaOcupacao = useMemo(() => {
+    const hoje = [...consultas, ...atendimentosOdonto].filter(
+      (c) => (c.data || "").slice(0, 10) === dataHoje,
     );
-  }, [pagamentos, atendimentosOdonto]);
+    const fin = hoje.filter((c) => statusOp(c.status) === "finalizado").length;
+    return hoje.length ? Math.min(Math.round((fin / hoje.length) * 100), 100) : 0;
+  }, [consultas, atendimentosOdonto, dataHoje]);
 
-  // ── Consultórios
-  const consultorios = useMemo(() => {
-    const salas = Array.from({ length: 7 }, (_, i) => ({
-      numero: i + 1, medico: "Sem médico", pacienteAtual: null, tempo: 0, atendidosHoje: 0, status: "livre",
-    }));
-    consultasTratadas.forEach((c) => {
-      const n = c.consultorio;
-      if (n && n >= 1 && n <= 7) {
-        const sala = salas[n - 1];
-        if (c.medico && c.medico !== "Sem médico definido") sala.medico = c.medico;
-        if (c.statusOperacional === "atendimento") {
-          sala.pacienteAtual = c; sala.tempo = c.tempoEspera; sala.status = "ocupado";
-        }
-        if (c.statusOperacional === "finalizado" && (!c.data || c.data === dataHoje)) sala.atendidosHoje++;
-      }
-    });
-    return salas;
-  }, [consultasTratadas, dataHoje]);
+  // ── Trend semanal (usando dataHoje para evitar Date.now impuro)
+  const trendConsultas = useMemo(() => {
+    const [y, m, d] = dataHoje.split("-").map(Number);
+    function subDays(n) {
+      const dt = new Date(y, m - 1, d - n);
+      return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+    }
+    const last7start = subDays(7);
+    const prev7start = subDays(14);
+    const all = [...consultas, ...atendimentosOdonto];
+    const ult = all.filter((c) => { const dt = (c.data || "").slice(0, 10); return dt >= last7start && dt <= dataHoje; }).length;
+    const ant = all.filter((c) => { const dt = (c.data || "").slice(0, 10); return dt >= prev7start && dt < last7start; }).length;
+    return ant > 0 ? Math.round((ult - ant) / ant * 100) : null;
+  }, [consultas, atendimentosOdonto, dataHoje]);
 
-  // ── Alertas
-  const alertas = useMemo(() => {
-    const lista = [];
-    aguardando.filter((i) => i.tempoEspera >= 60).forEach((i) => {
-      lista.push({ nivel: "alto", icone: "⏰", msg: `${i.nomePaciente} aguarda há ${formatarTempo(i.tempoEspera)}` });
+  // ── Chart 7 dias
+  const chartDados = useMemo(() => {
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (6 - i));
+      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const label = d.toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", "").slice(0, 3);
+      const valor =
+        consultas.filter((c) => (c.data || "").slice(0, 10) === iso).length +
+        atendimentosOdonto.filter((c) => (c.data || "").slice(0, 10) === iso).length;
+      return { data: iso, label, valor };
     });
-    consultorios.filter((s) => s.status === "ocupado" && s.medico === "Sem médico").forEach((s) => {
-      lista.push({ nivel: "alto", icone: "🏥", msg: `Consultório ${s.numero} ocupado sem médico` });
+  }, [consultas, atendimentosOdonto]);
+
+  // ── Donut por especialidade
+  const specialtyData = useMemo(() => {
+    const counts = {};
+    consultas.forEach((c) => {
+      const esp = (c.especialidade || c.tipoAtendimento || c.tipo || "Outros").slice(0, 22);
+      counts[esp] = (counts[esp] || 0) + 1;
     });
-    if (resumoFinanceiro.qtdPendente > 0) {
-      lista.push({
-        nivel: "aviso", icone: "💳",
-        msg: `${resumoFinanceiro.qtdPendente} pagamento${resumoFinanceiro.qtdPendente > 1 ? "s" : ""} pendente${resumoFinanceiro.qtdPendente > 1 ? "s" : ""} — ${formatarMoeda(resumoFinanceiro.totalPendente)}`,
+    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    const COLORS = [P, "#8B5CF6", "#A78BFA", "#C4B5FD", "#DDD6FE"];
+    const top = sorted.slice(0, 4).map(([label, valor], i) => ({ label, valor, color: COLORS[i] }));
+    const outrosN = sorted.slice(4).reduce((s, [, n]) => s + n, 0);
+    if (outrosN > 0) top.push({ label: "Outros", valor: outrosN, color: COLORS[4] });
+    if (!top.length) return [{ label: "Sem dados", valor: 1, color: "#e2e8f0" }];
+    return top;
+  }, [consultas]);
+
+  const totalEspecialidades = specialtyData.reduce((s, d) => s + d.valor, 0);
+
+  // ── Próximos atendimentos (data selecionada)
+  const proximosAtend = useMemo(() => {
+    return [
+      ...consultas.map((c) => ({
+        id: `c-${c.id}`, hora: c.hora || c.horario || "—",
+        nome: obterNomePaciente(c), medico: obterMedico(c),
+        tipo: "Consulta", status: statusOp(c.status),
+        data: (c.data || "").slice(0, 10),
+      })),
+      ...atendimentosOdonto.map((c) => ({
+        id: `o-${c.id}`, hora: c.hora || c.horario || "—",
+        nome: obterNomePaciente(c), medico: obterMedico(c),
+        tipo: "Odonto", status: statusOp(c.status),
+        data: (c.data || "").slice(0, 10),
+      })),
+    ]
+      .filter((e) => e.data === selectedDate && e.status !== "cancelado")
+      .sort((a, b) => (a.hora > b.hora ? 1 : -1))
+      .slice(0, 6);
+  }, [consultas, atendimentosOdonto, selectedDate]);
+
+  // ── Resumo financeiro (mesma fonte de verdade do card principal: backend unificado)
+  //
+  // Prioridade:
+  //   1) Endpoint /financeiro/kpis-unificados (mês corrente — fonte de verdade).
+  //   2) Fallback: cálculo local sobre `pagamentos` carregados (limitado ao paginated).
+  const resumoFin = useMemo(() => {
+    if (kpisFinUnificado?.totais) {
+      const t = kpisFinUnificado.totais;
+      return {
+        faturamento:  Number(t.receita_confirmada || 0),
+        recebimentos: Number(t.receita_confirmada || 0),
+        pendencias:   Number(t.pendente_total     || 0),
+        // dados extras para legenda da UI
+        receitaHoje:  Number(t.receita_hoje       || 0),
+        periodo:      kpisFinUnificado.periodo,
+        fonte:        'backend-unificado',
+      };
+    }
+    const d = new Date();
+    const mes = d.getMonth(), ano = d.getFullYear();
+    const isMes = (p) => {
+      const dt = new Date((p.dataPagamento || p.data || "") + "T00:00:00");
+      return dt.getMonth() === mes && dt.getFullYear() === ano;
+    };
+    return {
+      faturamento: pagamentos
+        .filter((p) => isFaturamentoConfirmado(p) && isMes(p))
+        .reduce((t, p) => t + valorCanonicoPagamento(p), 0),
+      recebimentos: pagamentos
+        .filter((p) => isFaturamentoConfirmado(p) && isMes(p))
+        .reduce((t, p) => t + valorCanonicoPagamento(p), 0),
+      pendencias: pagamentos
+        .filter(isPagamentoPendente)
+        .reduce((t, p) => t + valorCanonicoPagamento(p), 0),
+      fonte: 'local-fallback',
+    };
+  }, [kpisFinUnificado, pagamentos]);
+
+  // ── Variação financeira mês anterior vs atual (real, sem fake %)
+  const variacaoFin = useMemo(() => {
+    const now = new Date();
+    const mesAtual = now.getMonth(), anoAtual = now.getFullYear();
+    const mesAnt = mesAtual === 0 ? 11 : mesAtual - 1;
+    const anoAnt = mesAtual === 0 ? anoAtual - 1 : anoAtual;
+    const isMesAtual = (p) => { const d = new Date((p.dataPagamento || p.data || "") + "T00:00:00"); return d.getMonth() === mesAtual && d.getFullYear() === anoAtual; };
+    const isMesAnt   = (p) => { const d = new Date((p.dataPagamento || p.data || "") + "T00:00:00"); return d.getMonth() === mesAnt   && d.getFullYear() === anoAnt; };
+    const recAtual = pagamentos.filter((p) => isFaturamentoConfirmado(p) && isMesAtual(p)).reduce((t, p) => t + valorCanonicoPagamento(p), 0);
+    const recAnt   = pagamentos.filter((p) => isFaturamentoConfirmado(p) && isMesAnt(p)).reduce((t, p) => t + valorCanonicoPagamento(p), 0);
+    if (!recAnt) return null;
+    return Math.round(((recAtual - recAnt) / recAnt) * 100);
+  }, [pagamentos]);
+
+  // ── IDs de atendimentos que já possuem registro de pagamento no módulo Pagamentos
+  const idsPagos = useMemo(() => {
+    return new Set(
+      pagamentos.map((p) => String(p.atendimentoId || p.consultaId || "")).filter(Boolean)
+    );
+  }, [pagamentos]);
+
+  // ── Alertas operacionais do dia (pacientes aguardando, sem pagamento, pendências)
+  const alertasOperacionais = useMemo(() => {
+    const alertas = [];
+    const aguardando = [...consultas, ...atendimentosOdonto].filter((c) => {
+      const s = normalizarTexto(c.status || "");
+      return (s === "aguardando" || s === "presente") && (c.data || "").slice(0, 10) === dataHoje;
+    });
+    if (aguardando.length > 0) {
+      alertas.push({
+        tipo: "atencao",
+        titulo: `${aguardando.length} paciente${aguardando.length > 1 ? "s" : ""} aguardando atendimento`,
+        detalhe: aguardando.map((c) => obterNomePaciente(c)).slice(0, 3).join(", "),
       });
     }
-    estoque
-      .filter((i) => { const q = Number(i.quantidade ?? 0), m = Number(i.minimo ?? 0); return m > 0 && q <= m; })
-      .slice(0, 2)
-      .forEach((i) => {
-        lista.push({ nivel: "estoque", icone: "📦", msg: `Estoque baixo: ${i.nome} (${i.quantidade} ${i.unidade || "un"})` });
+    const semPagamento = [...consultas, ...atendimentosOdonto].filter((c) => {
+      const s = normalizarTexto(c.status || "");
+      const spago = (c.statusPagamento || c.status_pagamento || "").toLowerCase();
+      return s === "finalizado"
+        && spago !== "cortesia"
+        && !idsPagos.has(String(c.id))
+        && !(c.pagamentoId || c.pagamento_id)
+        && (c.data || "").slice(0, 10) === dataHoje;
+    });
+    if (semPagamento.length > 0) {
+      alertas.push({
+        tipo: "urgente",
+        titulo: `${semPagamento.length} atendimento${semPagamento.length > 1 ? "s" : ""} aguardando pagamento`,
+        detalhe: "Acesse Pagamentos para registrar",
       });
-    if (!lista.length) lista.push({ nivel: "ok", icone: "✓", msg: "Operação estável — nenhum alerta" });
-    return lista;
-  }, [aguardando, consultorios, resumoFinanceiro, estoque]);
+    }
+    const pendentes = pagamentos.filter(isPagamentoPendente);
+    if (pendentes.length > 0) {
+      alertas.push({
+        tipo: "info",
+        titulo: `${pendentes.length} pagamento${pendentes.length > 1 ? "s" : ""} pendente${pendentes.length > 1 ? "s" : ""}`,
+        detalhe: `Total: ${formatarMoeda(pendentes.reduce((t, p) => t + valorCanonicoPagamento(p), 0))}`,
+      });
+    }
+    return alertas;
+  }, [consultas, atendimentosOdonto, idsPagos, dataHoje, pagamentos]);
 
-  const ultimosFinalizados = finalizadosHoje.slice(0, 5);
+  // ── Próxima ação recomendada
+  const proximaAcao = useMemo(() => {
+    const aguardando = [...consultas, ...atendimentosOdonto].filter((c) => {
+      const s = normalizarTexto(c.status || "");
+      return (s === "aguardando" || s === "presente") && (c.data || "").slice(0, 10) === dataHoje;
+    });
+    if (aguardando.length > 0) {
+      return { texto: `Iniciar atendimento de ${obterNomePaciente(aguardando[0])}`, view: "medicos", urgencia: "alta" };
+    }
+    const semPag = [...consultas, ...atendimentosOdonto].filter((c) => {
+      return normalizarTexto(c.status || "") === "finalizado" && !idsPagos.has(String(c.id)) && (c.data || "").slice(0, 10) === dataHoje;
+    });
+    if (semPag.length > 0) return { texto: "Registrar pagamento de atendimento finalizado", view: "pagamentos", urgencia: "media" };
+    const agendadosHoje = [...consultas, ...atendimentosOdonto].filter((c) => {
+      return normalizarTexto(c.status || "") === "agendado" && (c.data || "").slice(0, 10) === dataHoje;
+    });
+    if (agendadosHoje.length > 0) return { texto: `${agendadosHoje.length} agendamento${agendadosHoje.length > 1 ? "s" : ""} para hoje`, view: "agendamentos", urgencia: "baixa" };
+    return null;
+  }, [consultas, atendimentosOdonto, idsPagos, dataHoje]);
 
-  // ── Alert level color map
-  const alertColor = {
-    alto:    { bg: "#fff7ed", border: "#fed7aa" },
-    aviso:   { bg: "#fffbeb", border: "#fde68a" },
-    estoque: { bg: "#fef2f2", border: "#fecaca" },
-    ok:      { bg: "#f0fdf4", border: "#bbf7d0" },
+  // ── Atividades recentes
+  const atividades = useMemo(() => {
+    const ev = [];
+    [...consultas].reverse().slice(0, 5).forEach((c) => {
+      const s = statusOp(c.status);
+      ev.push({
+        id: `c-${c.id}`,
+        tipo: "consulta",
+        titulo: s === "finalizado" ? "Consulta finalizada" : s === "agendado" ? "Consulta agendada" : "Consulta em andamento",
+        detalhe: `${obterNomePaciente(c)}${obterMedico(c) !== "—" ? ` · ${obterMedico(c)}` : ""}`,
+        hora: c.hora || "—",
+        iconBg: PL, iconColor: P,
+      });
+    });
+    pagamentos
+      .filter(isFaturamentoConfirmado)
+      .slice(-4).reverse()
+      .forEach((p) => {
+        ev.push({
+          id: `p-${p.id}`, tipo: "pagamento",
+          titulo: "Pagamento recebido",
+          detalhe: `${p.nomePaciente || "Paciente"} · ${formatarMoeda(valorCanonicoPagamento(p))}`,
+          hora: (p.dataPagamento || "").slice(11, 16) || "—",
+          iconBg: "#dcfce7", iconColor: "#16a34a",
+        });
+      });
+    pacientes.slice(-3).reverse().forEach((p) => {
+      ev.push({
+        id: `pac-${p.id}`, tipo: "paciente",
+        titulo: "Paciente cadastrado",
+        detalhe: p.nome || "Novo paciente",
+        hora: "—",
+        iconBg: "#dbeafe", iconColor: "#2563eb",
+      });
+    });
+    return ev.slice(0, 7);
+  }, [consultas, pagamentos, pacientes]);
+
+  // ── Ações rápidas
+  const quickActions = [
+    { label: "Nova Consulta",   view: "medicos",       iconBg: PL,        iconColor: P },
+    { label: "Novo Paciente",   view: "pacientes",     iconBg: "#dbeafe", iconColor: "#2563eb" },
+    { label: "Buscar Paciente", view: "pacientes",     iconBg: "#f1f5f9", iconColor: "#64748b" },
+    { label: "Emitir Recibo",   view: "pagamentos",    iconBg: "#fef3c7", iconColor: "#f59e0b" },
+    { label: "Relatórios",      view: "relatorios",    iconBg: "#fee2e2", iconColor: "#dc2626" },
+    { label: "Agenda do Dia",   view: "agendamentos",  iconBg: "#e0f2fe", iconColor: "#0284c7" },
+  ];
+
+  const qaIcons = {
+    "Nova Consulta": (c) => (
+      <svg width="20" height="20" fill="none" stroke={c} strokeWidth="2" viewBox="0 0 24 24">
+        <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
+        <rect x="9" y="3" width="6" height="4" rx="1" /><path d="M12 11v6M9 14h6" />
+      </svg>
+    ),
+    "Novo Paciente": (c) => (
+      <svg width="20" height="20" fill="none" stroke={c} strokeWidth="2" viewBox="0 0 24 24">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="8.5" cy="7" r="4" />
+        <line x1="20" y1="8" x2="20" y2="14" /><line x1="17" y1="11" x2="23" y2="11" />
+      </svg>
+    ),
+    "Buscar Paciente": (c) => (
+      <svg width="20" height="20" fill="none" stroke={c} strokeWidth="2" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+      </svg>
+    ),
+    "Emitir Recibo": (c) => (
+      <svg width="20" height="20" fill="none" stroke={c} strokeWidth="2" viewBox="0 0 24 24">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" />
+      </svg>
+    ),
+    "Relatórios": (c) => (
+      <svg width="20" height="20" fill="none" stroke={c} strokeWidth="2" viewBox="0 0 24 24">
+        <path d="M18 20V10M12 20V4M6 20v-6" />
+      </svg>
+    ),
+    "Agenda do Dia": (c) => (
+      <svg width="20" height="20" fill="none" stroke={c} strokeWidth="2" viewBox="0 0 24 24">
+        <rect x="3" y="4" width="18" height="18" rx="2" /><path d="M16 2v4M8 2v4M3 10h18" />
+      </svg>
+    ),
+  };
+
+  const actIcons = {
+    consulta: (bg, color) => (
+      <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: bg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <svg width="15" height="15" fill="none" stroke={color} strokeWidth="2" viewBox="0 0 24 24">
+          <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
+          <rect x="9" y="3" width="6" height="4" rx="1" />
+        </svg>
+      </div>
+    ),
+    pagamento: (bg, color) => (
+      <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: bg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <svg width="15" height="15" fill="none" stroke={color} strokeWidth="2" viewBox="0 0 24 24">
+          <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+        </svg>
+      </div>
+    ),
+    paciente: (bg, color) => (
+      <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: bg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <svg width="15" height="15" fill="none" stroke={color} strokeWidth="2" viewBox="0 0 24 24">
+          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" />
+        </svg>
+      </div>
+    ),
+  };
+
+  const evDateLabel = (() => {
+    try {
+      return new Date(selectedDate + "T00:00:00").toLocaleDateString("pt-BR", {
+        day: "2-digit", month: "short",
+      });
+    } catch {
+      return selectedDate;
+    }
+  })();
+
+  // card base style reutilizável
+  const card = {
+    background: "#fff",
+    borderRadius: "14px",
+    border: "1px solid #e5e7eb",
+    boxShadow: "0 1px 4px rgba(15,23,42,0.05)",
+    padding: "20px",
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "16px", width: "100%" }}>
+    /* Renderiza DENTRO da área de conteúdo do sistema — sem position fixed,
+       sem sidebar própria, sem topbar própria. */
+    <div style={{ display: "flex", flexDirection: "column", gap: "20px", width: "100%" }}>
 
-      {/* ── 1. HEADER ────────────────────────────────────────────────────── */}
+      {/* ── Cabeçalho da página (NÃO é uma topbar global) ── */}
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "18px 24px", borderRadius: "16px",
-        background: "linear-gradient(135deg, #0f172a 0%, #1e293b 55%, #334155 100%)",
-        color: "#fff", boxShadow: "0 8px 28px rgba(15,23,42,0.18)",
+        padding: "20px 24px",
+        background: `linear-gradient(135deg, #3B0764 0%, ${P} 55%, #8B5CF6 100%)`,
+        borderRadius: "16px", color: "#fff",
+        boxShadow: "0 8px 28px rgba(124,58,237,0.25)",
       }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 800, letterSpacing: "-0.03em", color: "#fff" }}>
-            Central de Operação
+          <h1 style={{ margin: 0, fontSize: "21px", fontWeight: 800, letterSpacing: "-0.03em" }}>
+            Dashboard
           </h1>
-          <p style={{ margin: "5px 0 0", fontSize: "13px", color: "rgba(255,255,255,0.55)", fontWeight: 400 }}>
-            {agora.toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+          <p style={{ margin: "4px 0 0", fontSize: "13px", color: "rgba(255,255,255,0.72)" }}>
+            Bem-vindo, {firstName} · {dataFormatada}
           </p>
         </div>
         <div style={{
-          display: "flex", alignItems: "center", gap: "8px",
-          padding: "8px 16px", borderRadius: "999px",
-          background: "rgba(255,255,255,0.09)", border: "1px solid rgba(255,255,255,0.14)",
-          fontSize: "13px", fontWeight: 600, color: "rgba(255,255,255,0.9)",
+          padding: "8px 16px", borderRadius: "10px",
+          background: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.2)",
+          fontSize: "13px", fontWeight: 700, letterSpacing: "0.02em",
         }}>
-          <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: "#22c55e", boxShadow: "0 0 0 4px rgba(34,197,94,0.2)", flexShrink: 0 }} />
-          {agora.toLocaleTimeString("pt-BR")}
+          {new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
         </div>
       </div>
 
-      {/* ── 2. KPI CARDS ─────────────────────────────────────────────────── */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "12px" }}>
-        {[
-          {
-            label: "Pacientes aguardando",
-            value: aguardando.length,
-            sub: `${chegada.length} na recepção`,
-            accent: "#f59e0b", bg: "#fffbeb", border: "#fde68a",
-            Icon: () => <IconUser color="#f59e0b" size={17} />,
-          },
-          {
-            label: "Em atendimento",
-            value: emAtendimento.length,
-            sub: `${finalizadosHoje.length} finalizados hoje`,
-            accent: "#0f766e", bg: "#f0fdf9", border: "#99f6e4",
-            Icon: () => <IconActivity color="#0f766e" size={17} />,
-          },
-          {
-            label: "Tempo médio",
-            value: tempoMedioAtendimento === 0 ? "0 min" : formatarTempo(tempoMedioAtendimento),
-            sub: "de atendimento",
-            accent: "#7c3aed", bg: "#faf5ff", border: "#e9d5ff",
-            isText: true,
-            Icon: () => <IconClock color="#7c3aed" size={17} />,
-          },
-          {
-            label: "Receita do dia",
-            value: formatarMoeda(receitaHoje),
-            sub: `${formatarMoeda(resumoFinanceiro.receitaMes)} este mês`,
-            accent: "#16a34a", bg: "#f0fdf4", border: "#bbf7d0",
-            isText: true,
-            onClick: onIrParaFinanceiro,
-            Icon: () => <IconDollar color="#16a34a" size={17} />,
-          },
-        ].map((card) => (
-          <div
-            key={card.label}
-            onClick={card.onClick}
+      {/* ── 4 KPI Cards ── */}
+      <div className="dash-kpi-row" style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "14px" }}>
+        {summaryCard(
+          "Pacientes Ativos",
+          totalPacientes.toLocaleString("pt-BR"),
+          "cadastros ativos",
+          null,
+          <svg width="20" height="20" fill="none" stroke={P} strokeWidth="2" viewBox="0 0 24 24">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" />
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+          </svg>,
+          PL,
+        )}
+        {summaryCard(
+          "Consultas no Mês",
+          consultasMes.toLocaleString("pt-BR"),
+          "vs semana anterior",
+          trendConsultas,
+          <svg width="20" height="20" fill="none" stroke="#2563eb" strokeWidth="2" viewBox="0 0 24 24">
+            <rect x="3" y="4" width="18" height="18" rx="2" /><path d="M16 2v4M8 2v4M3 10h18" />
+          </svg>,
+          "#dbeafe",
+        )}
+        {summaryCard(
+          "Faturamento do Mês",
+          formatarMoeda(faturamentoMes),
+          variacaoFin !== null ? "vs mês anterior" : "pagamentos confirmados",
+          variacaoFin,
+          <svg width="20" height="20" fill="none" stroke="#f59e0b" strokeWidth="2" viewBox="0 0 24 24">
+            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+          </svg>,
+          "#fef3c7",
+        )}
+        {summaryCard(
+          "Taxa de Ocupação",
+          `${taxaOcupacao}%`,
+          taxaOcupacao >= 80 ? "Ótimo" : taxaOcupacao >= 60 ? "Bom" : "Regular",
+          null,
+          null,
+          undefined,
+          taxaOcupacao,
+        )}
+      </div>
+
+      {/* ── Alertas operacionais (locais + backend) ── */}
+      {(alertasOperacionais.length > 0 || alertasBackend.length > 0) && (
+        <AlertaBanner alertas={[...alertasOperacionais, ...alertasBackend]} />
+      )}
+
+      {/* ── Próxima ação recomendada ── */}
+      {proximaAcao && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: "12px", padding: "12px 16px",
+          borderRadius: "12px",
+          background: proximaAcao.urgencia === "alta" ? "#fef2f2" : proximaAcao.urgencia === "media" ? "#fffbeb" : "#f0fdf4",
+          border: `1px solid ${proximaAcao.urgencia === "alta" ? "#fca5a5" : proximaAcao.urgencia === "media" ? "#fcd34d" : "#86efac"}`,
+        }}>
+          <span style={{ fontSize: "18px" }}>
+            {proximaAcao.urgencia === "alta" ? "🔴" : proximaAcao.urgencia === "media" ? "🟡" : "🟢"}
+          </span>
+          <div style={{ flex: 1 }}>
+            <span style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: ".05em" }}>
+              Próxima ação recomendada
+            </span>
+            <div style={{ fontSize: "13px", fontWeight: 600, color: "#0f172a" }}>{proximaAcao.texto}</div>
+          </div>
+          <button
+            onClick={() => nav(proximaAcao.view)}
             style={{
-              background: card.bg,
-              border: `1px solid ${card.border}`,
-              borderRadius: "14px",
-              padding: "18px 20px",
-              cursor: card.onClick ? "pointer" : "default",
-              boxShadow: "0 1px 4px rgba(15,23,42,0.04)",
+              padding: "6px 12px", borderRadius: "7px", border: "1px solid #e2e8f0",
+              background: "#fff", fontSize: "12px", fontWeight: 600, color: "#374151", cursor: "pointer",
             }}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "12px" }}>
-              <span style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.07em", lineHeight: 1.3 }}>
-                {card.label}
-              </span>
-              <div style={{
-                width: "30px", height: "30px", borderRadius: "8px",
-                background: "#fff", border: "1px solid rgba(0,0,0,0.06)",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
-                flexShrink: 0,
-              }}>
-                <card.Icon />
-              </div>
-            </div>
-            <div style={{
-              fontSize: card.isText ? "21px" : "36px",
-              fontWeight: 800, color: card.accent,
-              letterSpacing: "-0.04em", lineHeight: 1, marginBottom: "5px",
-            }}>
-              {card.value}
-            </div>
-            <div style={{ fontSize: "11px", color: "#94a3b8" }}>{card.sub}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* ── 3. ODONTOLOGIA (conditional) ─────────────────────────────────── */}
-      {atendimentosOdonto.length > 0 && (
-        <div style={{
-          background: "#f0fdf9", border: "1px solid #99f6e4",
-          borderRadius: "14px", padding: "14px 18px",
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "7px", marginBottom: "12px" }}>
-            <IconTooth color="#0f766e" size={15} />
-            <h3 style={{ margin: 0, fontSize: "13px", fontWeight: 700, color: "#0f766e" }}>Odontologia</h3>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "8px" }}>
-            {[
-              { label: "Aguardando",    value: odontoAguardando,           color: "#f59e0b" },
-              { label: "Em atendimento", value: odontoEmAtendimento,        color: "#0f766e" },
-              { label: "Finalizados",   value: odontoFinalizados,           color: "#16a34a" },
-              { label: "Receita",       value: formatarMoeda(receitaOdonto), color: "#0f766e", isText: true },
-            ].map((k) => (
-              <div key={k.label} style={{ background: "#fff", borderRadius: "10px", padding: "10px 12px", border: "1px solid #d1fae5" }}>
-                <div style={{ fontSize: "10px", fontWeight: 600, color: "#64748b", marginBottom: "4px" }}>{k.label}</div>
-                <div style={{ fontSize: k.isText ? "14px" : "22px", fontWeight: 800, color: k.color, letterSpacing: "-0.02em" }}>{k.value}</div>
-              </div>
-            ))}
-          </div>
+            Ir →
+          </button>
         </div>
       )}
 
-      {/* ── 4. STOCK ALERT (conditional) ─────────────────────────────────── */}
-      {estoque.some((i) => { const q = Number(i.quantidade ?? 0), m = Number(i.minimo ?? 0); return m > 0 && q <= m; }) && (
-        <div style={{
-          background: "#fef2f2", border: "1px solid #fecaca",
-          borderRadius: "12px", padding: "12px 16px",
-          display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap",
-        }}>
-          <IconWarning color="#dc2626" size={16} />
-          <span style={{ fontSize: "13px", fontWeight: 700, color: "#dc2626" }}>Estoque crítico:</span>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "5px", flex: 1 }}>
-            {estoque
-              .filter((i) => { const q = Number(i.quantidade ?? 0), m = Number(i.minimo ?? 0); return m > 0 && q <= m; })
-              .map((i) => (
-                <span key={i.id} style={{
-                  padding: "2px 9px", borderRadius: "999px",
-                  background: "#fff", border: "1px solid #fca5a5",
-                  fontSize: "11px", fontWeight: 600, color: "#dc2626",
-                }}>
-                  {i.nome} ({i.quantidade} {i.unidade || "un"})
-                </span>
-              ))}
-          </div>
-          {onIrParaEstoque && (
-            <button onClick={onIrParaEstoque} style={{
-              padding: "6px 14px", borderRadius: "8px", border: "none",
-              background: "#dc2626", color: "#fff",
-              fontWeight: 700, fontSize: "12px", cursor: "pointer", flexShrink: 0,
-            }}>
-              Ver estoque
-            </button>
-          )}
-        </div>
-      )}
+      {/* ── Layout principal 2 colunas ── */}
+      <div className="dash-two-col" style={{ display: "grid", gridTemplateColumns: "minmax(0,2fr) minmax(268px,1fr)", gap: "20px", alignItems: "start" }}>
 
-      {/* ── 5. MAIN 2-COL: kanban + sidebar ──────────────────────────────── */}
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "minmax(0,1.7fr) minmax(270px,1fr)",
-        gap: "14px",
-        alignItems: "start",
-      }}>
+        {/* ── Coluna esquerda ── */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "18px" }}>
 
-        {/* ── Patient kanban ── */}
-        <div style={{
-          background: "#fff", border: "1px solid #e5e7eb",
-          borderRadius: "16px", boxShadow: "0 2px 10px rgba(15,23,42,0.05)", overflow: "hidden",
-        }}>
-          <div style={{
-            padding: "14px 18px", borderBottom: "1px solid #f1f5f9",
-            display: "flex", alignItems: "center", justifyContent: "space-between",
-          }}>
-            <div>
-              <h2 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>Fluxo de pacientes</h2>
-              <p style={{ margin: "2px 0 0", fontSize: "11px", color: "#94a3b8" }}>Controle por etapa do atendimento</p>
-            </div>
-            <span style={{
-              fontSize: "12px", color: "#475569", background: "#f1f5f9",
-              padding: "4px 12px", borderRadius: "999px", fontWeight: 600,
-            }}>
-              {chegada.length + aguardando.length + emAtendimento.length} na unidade
-            </span>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "10px", padding: "14px" }}>
-            <ColunaKanban tipo="chegada"     lista={chegada} />
-            <ColunaKanban tipo="aguardando"  lista={aguardando} />
-            <ColunaKanban tipo="atendimento" lista={emAtendimento} />
-            <ColunaKanban tipo="finalizado"  lista={finalizadosHoje} />
-          </div>
-        </div>
-
-        {/* ── Right sidebar ── */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-
-          {/* ── Financial chart ── */}
-          <div style={{
-            background: "#fff", border: "1px solid #e5e7eb",
-            borderRadius: "14px", padding: "16px 18px",
-            boxShadow: "0 2px 10px rgba(15,23,42,0.05)",
-          }}>
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "14px" }}>
+          {/* Gráfico de linha */}
+          <div style={card}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
               <div>
-                <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>Receita — 7 dias</h3>
-                <p style={{ margin: "2px 0 0", fontSize: "11px", color: "#94a3b8" }}>Pagamentos confirmados por dia</p>
+                <h3 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>Consultas nos últimos 7 dias</h3>
+                <p style={{ margin: "3px 0 0", fontSize: "11px", color: "#94a3b8" }}>Médico + Odonto</p>
               </div>
-              <div style={{ display: "flex", gap: "6px" }}>
-                {onIrParaPagamentos && (
-                  <button onClick={onIrParaPagamentos} style={{
-                    fontSize: "11px", color: "#64748b", background: "#f8fafc",
-                    border: "1px solid #e2e8f0", borderRadius: "6px",
-                    cursor: "pointer", padding: "4px 9px", fontWeight: 600,
-                  }}>
-                    Pagamentos
-                  </button>
-                )}
-                {onIrParaFinanceiro && (
-                  <button onClick={onIrParaFinanceiro} style={{
-                    fontSize: "11px", color: "#0f766e", background: "transparent",
-                    border: "none", cursor: "pointer", fontWeight: 700, padding: "4px 0",
-                  }}>
-                    Financeiro →
+              <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                <span style={{ padding: "4px 12px", borderRadius: "6px", background: PL, color: PD, fontSize: "11px", fontWeight: 700 }}>Semanal</span>
+                {onIrParaRelatorios && (
+                  <button
+                    onClick={onIrParaRelatorios}
+                    style={{ padding: "4px 10px", borderRadius: "6px", background: "transparent", border: "1px solid #e2e8f0", color: "#64748b", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}
+                  >
+                    Relatório →
                   </button>
                 )}
               </div>
             </div>
-            <MiniBarChart dados={chartDados} hoje={dataHoje} />
-            <div style={{
-              display: "flex", justifyContent: "space-between",
-              marginTop: "12px", paddingTop: "12px",
-              borderTop: "1px solid #f1f5f9",
-            }}>
-              <div>
-                <div style={{ fontSize: "10px", color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "3px" }}>Mês atual</div>
-                <div style={{ fontSize: "16px", fontWeight: 800, color: "#0f766e", letterSpacing: "-0.03em" }}>{formatarMoeda(resumoFinanceiro.receitaMes)}</div>
-              </div>
-              {resumoFinanceiro.qtdPendente > 0 && (
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ fontSize: "10px", color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "3px" }}>Pendências</div>
-                  <div style={{ fontSize: "16px", fontWeight: 800, color: "#f59e0b", letterSpacing: "-0.03em" }}>{formatarMoeda(resumoFinanceiro.totalPendente)}</div>
-                </div>
-              )}
-            </div>
+            <AreaChart dados={chartDados} />
           </div>
 
-          {/* ── Consultórios ── */}
-          <div style={{
-            background: "#fff", border: "1px solid #e5e7eb",
-            borderRadius: "14px", boxShadow: "0 2px 10px rgba(15,23,42,0.05)", overflow: "hidden",
-          }}>
-            <div style={{ padding: "14px 18px", borderBottom: "1px solid #f1f5f9" }}>
-              <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>Consultórios</h3>
-              <p style={{ margin: "2px 0 0", fontSize: "11px", color: "#94a3b8" }}>Status em tempo real</p>
+          {/* Gráfico donut */}
+          <div style={card}>
+            <div style={{ marginBottom: "16px" }}>
+              <h3 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>Consultas por Especialidade</h3>
+              <p style={{ margin: "3px 0 0", fontSize: "11px", color: "#94a3b8" }}>Distribuição geral</p>
             </div>
-            <div style={{ maxHeight: "320px", overflowY: "auto", padding: "10px" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "7px" }}>
-                {consultorios.map((sala) => (
-                  <div key={sala.numero} style={{
-                    borderRadius: "10px", padding: "10px 11px",
-                    background: sala.status === "ocupado" ? "#eff6ff" : "#f8fafc",
-                    border: `1px solid ${sala.status === "ocupado" ? "#bfdbfe" : "#e5e7eb"}`,
-                  }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "5px" }}>
-                      <span style={{ fontSize: "12px", fontWeight: 700, color: "#0f172a" }}>Sala {sala.numero}</span>
-                      <span style={{
-                        fontSize: "9px", fontWeight: 800, padding: "2px 7px", borderRadius: "999px",
-                        background: sala.status === "ocupado" ? "#dbeafe" : "#e2e8f0",
-                        color: sala.status === "ocupado" ? "#1d4ed8" : "#64748b",
-                      }}>
-                        {sala.status === "ocupado" ? "Ocupado" : "Livre"}
-                      </span>
+            <DonutChart segments={specialtyData} total={totalEspecialidades} />
+          </div>
+
+          {/* Atividades + Ações rápidas */}
+          <div className="dash-bottom-row" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "18px" }}>
+
+            {/* Atividades recentes */}
+            <div style={card}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "14px" }}>
+                <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>Atividades recentes</h3>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                {atividades.length === 0 ? (
+                  <p style={{ fontSize: "12px", color: "#94a3b8", textAlign: "center", padding: "16px 0", margin: 0 }}>
+                    Nenhuma atividade
+                  </p>
+                ) : atividades.map((a) => (
+                  <div key={a.id} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    {actIcons[a.tipo]?.(a.iconBg, a.iconColor)}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: "12px", fontWeight: 600, color: "#0f172a" }}>{a.titulo}</div>
+                      <div style={{ fontSize: "11px", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.detalhe}</div>
                     </div>
-                    <div style={{ fontSize: "11px", color: "#475569" }}>
-                      <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {sala.medico}
-                      </div>
-                      {sala.pacienteAtual && (
-                        <div style={{ color: "#94a3b8", marginTop: "2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {sala.pacienteAtual.nomePaciente} · {formatarTempo(sala.tempo)}
-                        </div>
-                      )}
-                      {sala.atendidosHoje > 0 && (
-                        <div style={{ color: "#16a34a", marginTop: "2px", fontSize: "10px", fontWeight: 600 }}>
-                          {sala.atendidosHoje} atendido{sala.atendidosHoje > 1 ? "s" : ""} hoje
-                        </div>
-                      )}
-                    </div>
+                    <span style={{ fontSize: "10px", color: "#94a3b8", flexShrink: 0 }}>{a.hora}</span>
                   </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Ações rápidas */}
+            <div style={card}>
+              <h3 style={{ margin: "0 0 14px", fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>Ações rápidas</h3>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                {quickActions.map((qa) => (
+                  <button
+                    key={qa.label}
+                    onClick={() => nav(qa.view)}
+                    style={{
+                      display: "flex", flexDirection: "column", alignItems: "center",
+                      justifyContent: "center", gap: "7px", padding: "14px 8px",
+                      borderRadius: "11px", border: "1px solid #e5e7eb",
+                      background: "#fff", cursor: "pointer", transition: "all 0.15s",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = qa.iconBg;
+                      e.currentTarget.style.borderColor = qa.iconColor + "44";
+                      e.currentTarget.style.transform = "translateY(-1px)";
+                      e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.08)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = "#fff";
+                      e.currentTarget.style.borderColor = "#e5e7eb";
+                      e.currentTarget.style.transform = "";
+                      e.currentTarget.style.boxShadow = "none";
+                    }}
+                  >
+                    <div style={{ width: "38px", height: "38px", borderRadius: "9px", background: qa.iconBg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {qaIcons[qa.label]?.(qa.iconColor)}
+                    </div>
+                    <span style={{ fontSize: "11px", fontWeight: 600, color: "#374151", textAlign: "center", lineHeight: 1.3 }}>
+                      {qa.label}
+                    </span>
+                  </button>
                 ))}
               </div>
             </div>
           </div>
         </div>
-      </div>
 
-      {/* ── 6. BOTTOM: alerts + recent ───────────────────────────────────── */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
+        {/* ── Coluna direita (calendário + agenda + financeiro) ── */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
 
-        {/* ── Alertas rápidos ── */}
-        <div style={{
-          background: "#fff", border: "1px solid #e5e7eb",
-          borderRadius: "14px", boxShadow: "0 1px 6px rgba(15,23,42,0.04)", overflow: "hidden",
-        }}>
-          <div style={{
-            padding: "13px 16px", borderBottom: "1px solid #f1f5f9",
-            display: "flex", alignItems: "center", gap: "8px",
-          }}>
-            <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>Alertas rápidos</h3>
-            {alertas.some((a) => a.nivel === "alto") && (
-              <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: "#ef4444" }} />
+          {/* Calendário */}
+          <div style={card}>
+            <h3 style={{ margin: "0 0 14px", fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>Calendário</h3>
+            <CalendarWidget
+              consultas={[...consultas, ...atendimentosOdonto]}
+              onSelectDate={setSelectedDate}
+            />
+          </div>
+
+          {/* Próximos atendimentos */}
+          <div style={card}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "14px" }}>
+              <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>Próximos atendimentos</h3>
+              <button
+                onClick={() => nav("agendamentos")}
+                style={{ fontSize: "11px", color: PD, fontWeight: 600, background: "none", border: "none", cursor: "pointer", padding: 0 }}
+              >
+                Ver agenda →
+              </button>
+            </div>
+            <div style={{ fontSize: "11px", color: "#94a3b8", marginBottom: "12px" }}>{evDateLabel}</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              {proximosAtend.length === 0 ? (
+                <p style={{ fontSize: "12px", color: "#94a3b8", textAlign: "center", padding: "14px 0", margin: 0 }}>
+                  Sem atendimentos para este dia
+                </p>
+              ) : proximosAtend.map((e) => (
+                <div key={e.id} style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+                  <div style={{
+                    width: "42px", flexShrink: 0, background: PBG,
+                    borderRadius: "8px", padding: "5px 3px",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}>
+                    <span style={{ fontSize: "11px", fontWeight: 700, color: PD }}>{e.hora}</span>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: "12px", fontWeight: 700, color: "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.nome}</div>
+                    <div style={{ fontSize: "11px", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {e.tipo} · {e.medico}
+                    </div>
+                  </div>
+                  <StatusBadge status={e.status} />
+                </div>
+              ))}
+            </div>
+            {proximosAtend.length > 0 && (
+              <button
+                onClick={() => nav("agendamentos")}
+                style={{
+                  width: "100%", marginTop: "12px", padding: "8px",
+                  borderRadius: "8px", border: "1px solid #e5e7eb",
+                  background: "#f8fafc", color: "#374151",
+                  fontSize: "12px", fontWeight: 600, cursor: "pointer",
+                }}
+              >
+                Ver todos os atendimentos
+              </button>
             )}
           </div>
-          <div style={{ padding: "8px" }}>
-            {alertas.map((a, i) => (
-              <div key={i} style={{
-                display: "flex", alignItems: "center", gap: "9px",
-                padding: "9px 10px", borderRadius: "8px", marginBottom: "4px",
-                background: alertColor[a.nivel]?.bg || "#f8fafc",
-                border: `1px solid ${alertColor[a.nivel]?.border || "#e5e7eb"}`,
-              }}>
-                <span style={{ fontSize: "14px", flexShrink: 0, lineHeight: 1 }}>{a.icone}</span>
-                <span style={{ fontSize: "12px", color: "#374151", lineHeight: 1.4 }}>{a.msg}</span>
-              </div>
-            ))}
-          </div>
-        </div>
 
-        {/* ── Últimos atendimentos ── */}
-        <div style={{
-          background: "#fff", border: "1px solid #e5e7eb",
-          borderRadius: "14px", boxShadow: "0 1px 6px rgba(15,23,42,0.04)", overflow: "hidden",
-        }}>
-          <div style={{ padding: "13px 16px", borderBottom: "1px solid #f1f5f9" }}>
-            <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>Últimos atendimentos</h3>
-            <p style={{ margin: "2px 0 0", fontSize: "11px", color: "#94a3b8" }}>Finalizados hoje</p>
-          </div>
-          <div style={{ padding: "8px" }}>
-            {ultimosFinalizados.length === 0 ? (
-              <div style={{ padding: "20px", textAlign: "center", color: "#94a3b8", fontSize: "12px" }}>
-                Nenhum atendimento finalizado hoje
-              </div>
-            ) : ultimosFinalizados.map((item, i) => (
-              <div key={item.id || i} style={{
-                display: "flex", alignItems: "center", gap: "10px",
-                padding: "9px 10px", borderRadius: "8px", marginBottom: "4px",
-                background: "#f8fafc", border: "1px solid #f1f5f9",
+          {/* Resumo financeiro */}
+          <div style={card}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "4px" }}>
+              <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>Resumo financeiro</h3>
+              <button
+                onClick={onIrParaFinanceiro}
+                style={{ fontSize: "11px", color: PD, fontWeight: 600, background: "none", border: "none", cursor: "pointer", padding: 0 }}
+              >
+                Ver detalhes
+              </button>
+            </div>
+            <div style={{ fontSize: "10px", color: "#94a3b8", marginBottom: "12px", display: "flex", alignItems: "center", gap: "6px" }}>
+              <span>
+                Período: mês corrente
+                {resumoFin.periodo?.inicio && resumoFin.periodo?.fim
+                  ? ` (${resumoFin.periodo.inicio} → ${resumoFin.periodo.fim})`
+                  : ""}
+              </span>
+              {kpisFinErro && (
+                <span style={{ color: "#dc2626", fontWeight: 700 }}>· offline (mostrando cache local)</span>
+              )}
+            </div>
+            {[
+              { label: "Faturamento do mês", valor: resumoFin.faturamento  },
+              { label: "Total recebido",      valor: resumoFin.recebimentos },
+              { label: "Pendências",          valor: resumoFin.pendencias, alerta: resumoFin.pendencias > 0 },
+            ].map((row) => (
+              <div key={row.label} style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                padding: "9px 0", borderBottom: "1px solid #f1f5f9",
               }}>
-                <div style={{
-                  width: "30px", height: "30px", borderRadius: "50%",
-                  background: "#ecfdf5", border: "1px solid #bbf7d0",
-                  display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                <span style={{ fontSize: "12px", color: "#374151" }}>{row.label}</span>
+                <span style={{
+                  fontSize: "12px", fontWeight: 700,
+                  color: row.alerta ? "#dc2626" : "#0f172a",
                 }}>
-                  <IconCheck />
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: "13px", fontWeight: 600, color: "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {item.nomePaciente}
-                  </div>
-                  <div style={{ fontSize: "11px", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {item.medico !== "Sem médico definido" ? item.medico : ""}
-                    {item.hora ? ` · ${item.hora}` : ""}
-                  </div>
-                </div>
-                <span style={{ fontSize: "10px", color: "#94a3b8", flexShrink: 0, maxWidth: "80px", textAlign: "right", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {item.tipoAtendimento}
+                  {formatarMoeda(row.valor)}
                 </span>
               </div>
             ))}
+            <button
+              onClick={onIrParaRelatorios}
+              style={{
+                marginTop: "12px", padding: 0, border: "none", background: "none",
+                fontSize: "12px", color: PD, fontWeight: 600, cursor: "pointer",
+                display: "block",
+              }}
+            >
+              Ver relatório financeiro completo ↗
+            </button>
           </div>
         </div>
       </div>
 
-      {/* ── Responsive styles ─────────────────────────────────────────────── */}
+      {/* ── Responsivo ── */}
       <style>{`
         @media (max-width: 1100px) {
-          .dash-main-grid { grid-template-columns: 1fr !important; }
-          .dash-kpi-grid  { grid-template-columns: repeat(2,1fr) !important; }
-          .dash-bottom    { grid-template-columns: 1fr !important; }
-          .dash-kanban    { grid-template-columns: repeat(2,1fr) !important; }
-          .dash-consult   { grid-template-columns: 1fr 1fr !important; }
+          .dash-two-col { grid-template-columns: 1fr !important; }
+          .dash-kpi-row { grid-template-columns: repeat(2,1fr) !important; }
         }
-        @media (max-width: 680px) {
-          .dash-kpi-grid  { grid-template-columns: 1fr 1fr !important; }
-          .dash-kanban    { grid-template-columns: 1fr 1fr !important; }
+        @media (max-width: 700px) {
+          .dash-kpi-row { grid-template-columns: 1fr !important; }
+          .dash-bottom-row { grid-template-columns: 1fr !important; }
         }
       `}</style>
     </div>

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { RealtimeClient, REALTIME_STATUS } from "./services/realtime";
 import {
   LayoutDashboard,
   Users,
@@ -14,28 +15,52 @@ import {
   BarChart2,
   BookOpen,
   Settings,
+  FolderOpen,
+  UserCog,
 } from "lucide-react";
 import { useAuth } from "./context/AuthContext";
+import { useToast } from "./context/ToastContext";
 import { hasPermission } from "./config/permissions";
-import api, { tokenStorage } from "./services/api";
+import api from "./services/api";
+import { hojeISO, isFuturo } from "./utils/dateUtils";
 
+// Eager-loaded: used immediately after login or very lightweight
 import Dashboard from "./pages/Dashboard";
-import Pacientes from "./pages/Pacientes";
-import Pagamentos from "./pages/Pagamentos";
-import Agendamentos from "./pages/Agendamentos";
-import Medicos from "./pages/Medicos";
-import Enfermagem from "./pages/Enfermagem";
-import Odonto from "./pages/Odonto";
-import Faturamento from "./pages/Faturamento";
-import Financeiro from "./pages/Financeiro";
-import Administracao from "./pages/Administracao";
-import Normas from "./pages/Normas";
-import Prontuario from "./pages/Prontuario";
-import Estoque from "./pages/Estoque";
-import Relatorios from "./pages/Relatorios";
 import DashboardMedico from "./pages/DashboardMedico";
 import DashboardFinanceiro from "./pages/DashboardFinanceiro";
+import Agendamentos from "./pages/Agendamentos";
+import Normas from "./pages/Normas";
+import Cadastros from "./pages/Cadastros";
 import ModalPerfil from "./components/ModalPerfil";
+import ModalAntecipacaoData from "./components/ModalAntecipacaoData";
+
+// Lazy-loaded: heavier modules loaded on first navigation
+const Pacientes      = lazy(() => import("./pages/Pacientes"));
+const Pagamentos     = lazy(() => import("./pages/Pagamentos"));
+const Medicos        = lazy(() => import("./pages/Medicos"));
+const Enfermagem     = lazy(() => import("./pages/Enfermagem"));
+const Odonto         = lazy(() => import("./pages/Odonto"));
+const Faturamento    = lazy(() => import("./pages/Faturamento"));
+const Financeiro     = lazy(() => import("./pages/Financeiro"));
+const Prontuario     = lazy(() => import("./pages/Prontuario"));
+const Estoque        = lazy(() => import("./pages/Estoque"));
+const Relatorios     = lazy(() => import("./pages/Relatorios"));
+const Configuracoes  = lazy(() => import("./pages/Configuracoes"));
+
+function mascaraCPF(cpf) {
+  if (!cpf) return "—";
+  const c = String(cpf).replace(/\D/g, "");
+  if (c.length !== 11) return cpf;
+  return `***.${c.slice(3, 6)}.${c.slice(6, 9)}-**`;
+}
+
+function mascaraTelefone(tel) {
+  if (!tel) return "—";
+  const t = String(tel).replace(/\D/g, "");
+  if (t.length === 11) return `(${t.slice(0, 2)}) *****-${t.slice(7)}`;
+  if (t.length === 10) return `(${t.slice(0, 2)}) ****-${t.slice(6)}`;
+  return tel;
+}
 
 function LoginScreen() {
   const { login } = useAuth();
@@ -67,7 +92,17 @@ function LoginScreen() {
     <div className="login-page-v2">
       <div className="login-wrapper-v2">
         <div className="login-brand-panel-v2">
-          <div className="login-brand-chip-v2">NexusCare</div>
+          {/* Logo Vynor Clinic */}
+          <div className="login-logo-wordmark">
+            <svg className="login-logo-icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M24 41C24 41 5 27.5 5 15.5C5 10.8 8.8 7 13.5 7C17.2 7 20.4 9.2 22 12.5L24 16.5L26 12.5C27.6 9.2 30.8 7 34.5 7C39.2 7 43 10.8 43 15.5C43 27.5 24 41 24 41Z" stroke="#C4B5FD" strokeWidth="2.2" fill="rgba(196,181,253,0.12)"/>
+              <path d="M9 22H15L17.5 16.5L20.5 27L23 19L25.5 23L28 22H39" stroke="#C4B5FD" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            <div>
+              <div className="login-logo-text">Vynor<span> Clinic</span></div>
+              <div style={{ fontSize: "10px", color: "rgba(255,255,255,0.45)", letterSpacing: "0.12em", textTransform: "uppercase", marginTop: "2px" }}>Healthcare System</div>
+            </div>
+          </div>
 
           <h1 className="login-title-v2">
             Gestão clínica moderna, segura e integrada.
@@ -100,7 +135,7 @@ function LoginScreen() {
         <div className="login-card-v2">
           <div className="login-card-header-v2">
             <h2>Entrar</h2>
-            <p>Informe seu usuário ou e-mail e senha para acessar o NexusCare.</p>
+            <p>Informe seu usuário ou e-mail e senha para acessar o Vynor Clinic.</p>
           </div>
 
           <div className="login-form-v2">
@@ -149,35 +184,37 @@ function LoginScreen() {
 
 function EscolherConsultorio({
   consultorios = [],
+  salasDef = [],
   userData,
   onSelecionar,
   onSair,
 }) {
   const meuId = String(userData?.id || "");
+  const toast = useToast();
 
-  function sessaoAtiva(consultorio) {
-    if (!consultorio?.lastActive) return false;
-    const ts = consultorio.lastActive?.toDate
-      ? consultorio.lastActive.toDate()
-      : new Date(consultorio.lastActive);
-    return Date.now() - ts.getTime() < 60000;
-  }
-
-  const salas = Array.from({ length: 7 }, (_, index) => {
-    const numero = index + 1;
-    const encontrado = consultorios.find((item) => Number(item.numero) === numero);
-    const ocupado = encontrado && sessaoAtiva(encontrado) ? encontrado : null;
-
-    return {
-      numero,
-      nome: `Consultório ${numero}`,
-      ocupado,
-    };
-  });
+  const salas = useMemo(() => {
+    // eslint-disable-next-line react-hooks/purity
+    const now = Date.now();
+    function sessaoAtiva(consultorio) {
+      if (!consultorio?.lastActive) return false;
+      const ts = consultorio.lastActive instanceof Date
+        ? consultorio.lastActive
+        : new Date(consultorio.lastActive);
+      return now - ts.getTime() < 60000;
+    }
+    const base = salasDef.length > 0
+      ? salasDef.map((s) => ({ numero: Number(s.numero), nome: s.nome }))
+      : Array.from({ length: 7 }, (_, i) => ({ numero: i + 1, nome: `Consultório ${i + 1}` }));
+    return base.map(({ numero, nome }) => {
+      const encontrado = consultorios.find((item) => Number(item.numero) === numero);
+      const ocupado = encontrado && sessaoAtiva(encontrado) ? encontrado : null;
+      return { numero, nome, ocupado };
+    });
+  }, [consultorios, salasDef]);
 
   async function escolherSala(sala) {
     if (sala.ocupado && sala.ocupado.medicoId !== meuId) {
-      alert(`${sala.nome} já está em uso por ${sala.ocupado.medicoNome}.`);
+      toast.warn(`${sala.nome} já está em uso por ${sala.ocupado.medicoNome}.`);
       return;
     }
 
@@ -189,7 +226,7 @@ function EscolherConsultorio({
       <div className="consultorio-select-card">
         <div className="consultorio-select-header">
           <div>
-            <span className="consultorio-chip">NexusCare</span>
+            <span className="consultorio-chip">Vynor Clinic</span>
             <h1>Escolha seu consultório</h1>
             <p>
               Selecione a sala onde você irá atender hoje. Essa informação será
@@ -239,6 +276,7 @@ function EscolherConsultorio({
 
 export default function App() {
   const { userData, loading, logout } = useAuth();
+  const toast = useToast();
   const meuId = String(userData?.id || "");
   const [view, setView] = useState("");
   const [sidebarMinimizada, setSidebarMinimizada] = useState(false);
@@ -246,72 +284,127 @@ export default function App() {
   const [consultaSelecionadaExterna, setConsultaSelecionadaExterna] = useState(null);
   const [pagamentoCheckout, setPagamentoCheckout] = useState(null);
   const [mostrarPerfil, setMostrarPerfil] = useState(false);
+  const [overrideModal, setOverrideModal] = useState(null);
 
   const [pacientes, setPacientes] = useState([]);
   const [consultas, setConsultas] = useState([]);
   const [pagamentos, setPagamentos] = useState([]);
+  const [pagamentosCarregados, setPagamentosCarregados] = useState(false);
   const [consultorios, setConsultorios] = useState([]);
+  const [salas, setSalas] = useState([]);
   const [users, setUsers] = useState([]);
   const [atendimentosOdonto, setAtendimentosOdonto] = useState([]);
   const [procedimentosOdonto, setProcedimentosOdonto] = useState([]);
   const [estoque, setEstoque] = useState([]);
-  const [dataLoading, setDataLoading] = useState(true);
+  const [agendamentosOdonto, setAgendamentosOdonto] = useState([]);
+  // Tracks which resources have already been loaded at least once (avoids toast spam on polls)
+  const carregouUmaVez = useRef({});
+  const staleData = useRef(new Set());
+  const viewRef = useRef("");
+  const prevForceRefreshCount = useRef(0);
+  const [forceRefreshCount, setForceRefreshCount] = useState(0);
+
+  // ── Realtime SSE ───────────────────────────────────────────────────────────
+  const realtimeRef                         = useRef(null);
+  const [realtimeStatus, setRealtimeStatus] = useState(REALTIME_STATUS.OFFLINE);
 
   // ── Carregamento via API MySQL (módulos migrados) ─────────────────────────────
   const carregarPacientes = useCallback(async () => {
+    if (userData?.role === "estoque") return;
+    const primeira = !carregouUmaVez.current.pacientes;
     try {
-      const res = await api.pacientes.listar({ per_page: 200 });
+      const res = await api.pacientes.listar({ per_page: 100 });
       setPacientes(Array.isArray(res?.data) ? res.data : []);
+      carregouUmaVez.current.pacientes = true;
     } catch (e) {
-      if (!e.isNetworkError) console.error("Erro pacientes:", e);
+      if (primeira && !e.isNetworkError) toast.error("Não foi possível carregar os pacientes.");
+      console.error("Erro pacientes:", e);
     }
-  }, []);
+  }, [toast, userData]);
 
   const carregarPagamentos = useCallback(async () => {
+    if (userData?.role === "estoque") return;
+    const primeira = !carregouUmaVez.current.pagamentos;
     try {
-      const res = await api.pagamentos.listar({ per_page: 200 });
+      const res = await api.pagamentos.listar({ per_page: 100, include_all_pending: 1 });
       setPagamentos(Array.isArray(res?.data) ? res.data : []);
+      setPagamentosCarregados(true);
+      carregouUmaVez.current.pagamentos = true;
     } catch (e) {
-      if (!e.isNetworkError) console.error("Erro pagamentos:", e);
+      if (primeira && !e.isNetworkError) toast.error("Não foi possível carregar os pagamentos.");
+      console.error("Erro pagamentos:", e);
     }
-  }, []);
+  }, [toast, userData]);
+
+  const userId = userData?.id;
+  const userRole = userData?.role;
+  const userPermissions = userData?.permissions;
 
   const carregarConsultas = useCallback(async () => {
+    if (userRole === "estoque") return;
+    const primeira = !carregouUmaVez.current.consultas;
     try {
-      const role = userData?.role || "";
       const podeVerTodos =
-        role === "admin" || role === "recepcao" || role === "financeiro" ||
-        role === "estoque" || role === "enfermagem" ||
-        (Array.isArray(userData?.permissions) && userData.permissions.includes("administracao"));
-      const params = { per_page: 200 };
-      if (!podeVerTodos && userData?.id) {
-        params.usuario_id = userData.id;
+        userRole === "admin" || userRole === "recepcao" || userRole === "financeiro" ||
+        userRole === "enfermagem" ||
+        (Array.isArray(userPermissions) && (userPermissions.includes("administracao") || userPermissions.includes("configuracoes")));
+      const params = { per_page: 100 };
+      if (!podeVerTodos && userId) {
+        params.usuario_id = userId;
       }
       const res = await api.atendimentos.listar(params);
       const docs = Array.isArray(res?.data) ? res.data : [];
       if (!podeVerTodos) docs.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
       setConsultas(docs);
-      setDataLoading(false);
+      carregouUmaVez.current.consultas = true;
     } catch (e) {
-      if (!e.isNetworkError) console.error("Erro consultas:", e);
+      if (primeira && !e.isNetworkError) toast.error("Não foi possível carregar os atendimentos.");
+      console.error("Erro consultas:", e);
       setConsultas([]);
-      setDataLoading(false);
     }
-  }, [userData?.id, userData?.role, userData?.permissions]);
+  }, [userId, userRole, userPermissions, toast]);
 
   const carregarAtendimentosOdonto = useCallback(async () => {
     try {
-      const res = await api.atendimentosOdonto.listar({ per_page: 200 });
+      const res = await api.atendimentosOdonto.listar({ per_page: 100 });
       setAtendimentosOdonto(Array.isArray(res?.data) ? res.data : []);
+      carregouUmaVez.current.atendimentosOdonto = true;
     } catch (e) {
-      if (!e.isNetworkError) console.error("Erro atendimentosOdonto:", e);
+      console.error("Erro atendimentosOdonto:", e);
     }
   }, []);
+
+  const carregarAgendamentosOdonto = useCallback(async () => {
+    try {
+      const res = await api.agendamentosOdonto.listar({ per_page: 100 });
+      setAgendamentosOdonto(Array.isArray(res?.data) ? res.data : []);
+      carregouUmaVez.current.agendamentosOdonto = true;
+    } catch (e) {
+      if (!e.isNetworkError) console.error("Erro agendamentosOdonto:", e);
+    }
+  }, []);
+
+  const criarAtendimentoOdontoDeAgendamento = useCallback(async (item) => {
+    const jaExiste = atendimentosOdonto.some(
+      (a) => String(a.agendamentoId || a.agendamento_id || "") === String(item.id)
+    );
+    if (jaExiste) return;
+    try {
+      // Criar pagamento pendente na chegada do paciente (não no agendamento)
+      const res = await api.agendamentosOdonto.confirmarChegada(item.id, { status: "aguardando" });
+      await Promise.all([carregarAgendamentosOdonto(), carregarAtendimentosOdonto(), carregarPagamentos()]);
+      return res?.data;
+    } catch (e) {
+      console.error("Erro ao criar atendimento odonto de agendamento:", e);
+      throw e;
+    }
+  }, [atendimentosOdonto, carregarAgendamentosOdonto, carregarAtendimentosOdonto, carregarPagamentos]);
 
   const carregarProcedimentosOdonto = useCallback(async () => {
     try {
       const res = await api.procedimentosOdonto.listar();
       setProcedimentosOdonto(Array.isArray(res?.data) ? res.data : []);
+      carregouUmaVez.current.procedimentosOdonto = true;
     } catch (e) {
       if (!e.isNetworkError) console.error("Erro procedimentosOdonto:", e);
     }
@@ -319,17 +412,20 @@ export default function App() {
 
   const carregarUsuarios = useCallback(async () => {
     try {
-      const res = await api.usuarios.listar({ per_page: 500 });
+      const res = await api.usuarios.listar({ per_page: 100 });
       setUsers(Array.isArray(res?.data) ? res.data : []);
+      carregouUmaVez.current.users = true;
     } catch (e) {
       if (!e.isNetworkError) console.error("Erro usuários:", e);
     }
   }, []);
 
   const carregarEstoque = useCallback(async () => {
-    try { const r = await api.estoque.listar(); setEstoque(r.data || []); } catch { setEstoque([]); }
+    try { const r = await api.estoque.listar(); setEstoque(r.data || []); carregouUmaVez.current.estoque = true; } catch { setEstoque([]); }
   }, []);
 
+  // Mantém viewRef sincronizado para uso em SSE handlers (closures)
+  useEffect(() => { viewRef.current = view; }, [view]);
 
   // ── Busca global ─────────────────────────────────────────────────────────────
   const [buscaGlobal, setBuscaGlobal] = useState("");
@@ -355,13 +451,42 @@ export default function App() {
     const inclui = (str) => norm(str).includes(t);
     const lista = [];
 
+    // ── Módulos do menu ──────────────────────────────────────────────────────
+    const MODULOS_MENU = [
+      { id: 'mod-recepcao',    label: 'Recepção',      view: 'pacientes',   palavras: ['recepcao', 'recepção', 'paciente', 'cadastro', 'check-in'] },
+      { id: 'mod-consultas',   label: 'Consultas',     view: 'consultas',   palavras: ['consultas', 'atendimento', 'fila', 'medico', 'médico'] },
+      { id: 'mod-agendamentos',label: 'Agendamentos',  view: 'agendamentos',palavras: ['agendamento', 'agenda', 'calendário', 'calendario'] },
+      { id: 'mod-pagamentos',  label: 'Pagamentos',    view: 'pagamentos',  palavras: ['pagamento', 'checkout', 'cobrança', 'cobranca', 'pagar'] },
+      { id: 'mod-financeiro',  label: 'Financeiro',    view: 'financeiro',  palavras: ['financeiro', 'receita', 'despesa', 'caixa', 'dinheiro'] },
+      { id: 'mod-faturamento', label: 'Faturamento',   view: 'faturamento', palavras: ['faturamento', 'fatura', 'nota', 'nf'] },
+      { id: 'mod-relatorios',  label: 'Relatórios',    view: 'relatorios',  palavras: ['relatorio', 'relatório', 'report', 'grafico', 'gráfico'] },
+      { id: 'mod-estoque',     label: 'Estoque',       view: 'estoque',     palavras: ['estoque', 'medicamento', 'insumo', 'inventario', 'produto'] },
+      { id: 'mod-enfermagem',  label: 'Enfermagem',    view: 'enfermagem',  palavras: ['enfermagem', 'triagem', 'sinais', 'vital', 'enfermeiro'] },
+      { id: 'mod-odonto',      label: 'Odontologia',   view: 'odonto',      palavras: ['odonto', 'odontologia', 'dentista', 'dente', 'dental'] },
+      { id: 'mod-normas',      label: 'Normas',        view: 'normas',      palavras: ['norma', 'protocolo', 'documento', 'regra'] },
+      { id: 'mod-config',      label: 'Configurações', view: 'admin',       palavras: ['configuracao', 'configuração', 'config', 'admin', 'usuario'] },
+    ];
+    MODULOS_MENU.forEach((mod) => {
+      if (inclui(mod.label) || mod.palavras.some((p) => inclui(p))) {
+        lista.push({
+          id: mod.id,
+          titulo: mod.label,
+          tipo: 'Módulo',
+          descricao: `Abrir módulo ${mod.label}`,
+          cor: '#6366f1',
+          icone: '🗂️',
+          view: mod.view,
+        });
+      }
+    });
+
     pacientes.forEach((p) => {
       if (inclui(p.nome) || inclui(p.cpf) || inclui(p.telefone) || inclui(p.email)) {
         lista.push({
           id: `pac-${p.id}`,
           titulo: p.nome || "Paciente sem nome",
           tipo: "Paciente",
-          descricao: [p.cpf && `CPF: ${p.cpf}`, p.telefone && `Tel: ${p.telefone}`].filter(Boolean).join(" · ") || "—",
+          descricao: [p.cpf && `CPF: ${mascaraCPF(p.cpf)}`, p.telefone && `Tel: ${mascaraTelefone(p.telefone)}`].filter(Boolean).join(" · ") || "—",
           cor: "#2563eb", icone: "👤", view: "pacientes",
         });
       }
@@ -418,9 +543,7 @@ export default function App() {
     return lista.slice(0, 10);
   }, [buscaGlobal, pacientes, consultas, pagamentos, users, atendimentosOdonto]);
 
-  const isMedico =
-    userData?.role === "medico" ||
-    hasPermission(userData, "medicos");
+  const isMedico = userData?.role === "medico";
 
   const consultorioAtual = useMemo(() => {
     if (!userData) return null;
@@ -431,12 +554,12 @@ export default function App() {
   useEffect(() => {
     setConsultorioConfirmadoSessao(false);
     setConsultaSelecionadaExterna(null);
-  }, [userData?.id]);
+  }, [userData?.id]); // reseta estado de sessão ao trocar de usuário
 
   useEffect(() => {
     if (!consultorioConfirmadoSessao || !meuId) return;
     const interval = setInterval(async () => {
-      try { await api.consultorios.ocupar({ status: 'ocupado' }); } catch (_) {}
+      try { await api.consultorios.ocupar({ status: 'ocupado' }); } catch { /* heartbeat silencioso */ }
     }, 10000);
     return () => clearInterval(interval);
   }, [consultorioConfirmadoSessao, meuId]);
@@ -445,8 +568,8 @@ export default function App() {
     if (!consultorioConfirmadoSessao || !meuId) return;
     const handleUnload = () => {
       navigator.sendBeacon
-        ? navigator.sendBeacon(`/nexuscare-api/api/consultorios/${meuId}`, '')
-        : fetch(`/nexuscare-api/api/consultorios/${meuId}`, { method: 'DELETE', keepalive: true }).catch(() => {});
+        ? navigator.sendBeacon(`/vynor-clinic-api/api/consultorios/${meuId}`, '')
+        : fetch(`/vynor-clinic-api/api/consultorios/${meuId}`, { method: 'DELETE', keepalive: true }).catch(() => {});
     };
     window.addEventListener("beforeunload", handleUnload);
     window.addEventListener("pagehide", handleUnload);
@@ -461,49 +584,208 @@ export default function App() {
       setPacientes([]);
       setConsultas([]);
       setPagamentos([]);
+      setPagamentosCarregados(false);
       setConsultorios([]);
+      setSalas([]);
       setUsers([]);
       setAtendimentosOdonto([]);
+      setAgendamentosOdonto([]);
       setProcedimentosOdonto([]);
       setEstoque([]);
-      setDataLoading(false);
+      carregouUmaVez.current = {};
+      staleData.current.clear();
       return;
     }
 
-    setDataLoading(true);
-
-    // ── Módulos migrados para MySQL: polling ───────────────────────────────
-    carregarPacientes();
-    carregarPagamentos();
-    carregarConsultas();
-    carregarAtendimentosOdonto();
-    carregarProcedimentosOdonto();
-    carregarUsuarios();
-    const timerPacientes          = setInterval(carregarPacientes,          30000);
-    const timerPagamentos         = setInterval(carregarPagamentos,         15000);
-    const timerConsultas          = setInterval(carregarConsultas,          30000);
-    const timerAtendimentosOdonto = setInterval(carregarAtendimentosOdonto, 30000);
-    const timerUsuarios           = setInterval(carregarUsuarios,           60000);
-
+    // Apenas dados globais obrigatórios: consultorios e salas (necessários antes de qualquer view)
     const carregarConsultorios = async () => {
-      try { const r = await api.consultorios.listar(); setConsultorios(r.data || []); } catch { }
+      try { const r = await api.consultorios.listar(); setConsultorios(r.data || []); } catch { /* ignora */ }
+    };
+    const carregarSalas = async () => {
+      try { const r = await api.salas.listar(); setSalas(r.data || []); } catch { /* ignora */ }
     };
 
     carregarConsultorios();
-    carregarEstoque();
-    const timerConsultorios = setInterval(carregarConsultorios, 10000);
-    const timerEstoque      = setInterval(carregarEstoque,      15000);
+    carregarSalas();
+    const timerConsultorios = setInterval(carregarConsultorios, 30000);
+    const timerSalas        = setInterval(carregarSalas, 120000);
 
     return () => {
-      clearInterval(timerPacientes);
-      clearInterval(timerPagamentos);
-      clearInterval(timerConsultas);
-      clearInterval(timerAtendimentosOdonto);
-      clearInterval(timerUsuarios);
       clearInterval(timerConsultorios);
-      clearInterval(timerEstoque);
+      clearInterval(timerSalas);
     };
-  }, [userData?.id, userData?.role, userData?.permissions, carregarPacientes, carregarPagamentos, carregarConsultas, carregarAtendimentosOdonto, carregarProcedimentosOdonto, carregarUsuarios, carregarEstoque]);
+  }, [userData]);
+
+  // ── Carregamento lazy por view: carrega apenas o que a view ativa precisa ──
+  useEffect(() => {
+    if (!userData || !view) return;
+
+    const isForcedRefresh = forceRefreshCount !== prevForceRefreshCount.current;
+    prevForceRefreshCount.current = forceRefreshCount;
+    const needs = (key) => isForcedRefresh || !carregouUmaVez.current[key] || staleData.current.has(key);
+    const flush = (key, fn) => { if (needs(key)) { fn(); staleData.current.delete(key); } };
+
+    switch (view) {
+      case 'pacientes':
+        flush('pacientes', carregarPacientes);
+        flush('agendamentosOdonto', carregarAgendamentosOdonto);
+        break;
+      case 'agendamentos':
+        flush('consultas', carregarConsultas);
+        flush('agendamentosOdonto', carregarAgendamentosOdonto);
+        flush('users', carregarUsuarios);
+        break;
+      case 'pagamentos':
+        flush('pagamentos', carregarPagamentos);
+        flush('atendimentosOdonto', carregarAtendimentosOdonto);
+        break;
+      case 'medicos':
+        flush('consultas', carregarConsultas);
+        flush('pacientes', carregarPacientes);
+        break;
+      case 'enfermagem':
+        flush('consultas', carregarConsultas);
+        flush('pacientes', carregarPacientes);
+        flush('procedimentosOdonto', carregarProcedimentosOdonto);
+        break;
+      case 'odonto':
+        flush('pacientes', carregarPacientes);
+        flush('users', carregarUsuarios);
+        flush('pagamentos', carregarPagamentos);
+        flush('atendimentosOdonto', carregarAtendimentosOdonto);
+        flush('agendamentosOdonto', carregarAgendamentosOdonto);
+        flush('procedimentosOdonto', carregarProcedimentosOdonto);
+        break;
+      case 'faturamento':
+        flush('pagamentos', carregarPagamentos);
+        flush('atendimentosOdonto', carregarAtendimentosOdonto);
+        break;
+      case 'financeiro':
+        flush('pagamentos', carregarPagamentos);
+        flush('consultas', carregarConsultas);
+        flush('pacientes', carregarPacientes);
+        break;
+      case 'prontuario':
+        flush('consultas', carregarConsultas);
+        flush('pacientes', carregarPacientes);
+        flush('atendimentosOdonto', carregarAtendimentosOdonto);
+        flush('pagamentos', carregarPagamentos);
+        break;
+      case 'relatorios':
+        flush('consultas', carregarConsultas);
+        flush('pagamentos', carregarPagamentos);
+        flush('pacientes', carregarPacientes);
+        flush('users', carregarUsuarios);
+        break;
+      case 'estoque':
+        flush('estoque', carregarEstoque);
+        break;
+      case 'configuracoes':
+      case 'administracao':
+        flush('users', carregarUsuarios);
+        break;
+      case 'cadastros':
+        flush('procedimentosOdonto', carregarProcedimentosOdonto);
+        break;
+      default:
+        break;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, userData, forceRefreshCount, carregarPacientes, carregarPagamentos, carregarConsultas,
+      carregarAtendimentosOdonto, carregarAgendamentosOdonto, carregarProcedimentosOdonto,
+      carregarUsuarios, carregarEstoque]);
+
+  // ── Realtime: conecta/desconecta conforme autenticação ───────────────────
+  useEffect(() => {
+    const token = userData
+      ? localStorage.getItem('vynorclinic_token')
+      : null;
+
+    if (!token) {
+      if (realtimeRef.current) {
+        realtimeRef.current.disconnect();
+        realtimeRef.current = null;
+      }
+      setRealtimeStatus(REALTIME_STATUS.OFFLINE);
+      return;
+    }
+
+    // Cria o client e conecta
+    const client = new RealtimeClient(token);
+    realtimeRef.current = client;
+
+    // Acompanha mudanças de status para o indicador visual
+    const unsubStatus = client.onStatusChange(setRealtimeStatus);
+
+    // ── Handlers: disparam o carregamento seletivo da lista afetada ─────────
+    // Usando os mesmos loaders do polling — garante normalização idêntica
+    // e evita qualquer lógica de merge manual que poderia duplicar registros.
+
+    // applyEvent: se a view atual precisa deste dado → recarrega agora; senão → marca stale
+    const VIEWS_FOR_KEY = {
+      pacientes:          ['pacientes', 'medicos', 'enfermagem', 'prontuario', 'relatorios', 'financeiro', 'odonto'],
+      consultas:          ['agendamentos', 'medicos', 'enfermagem', 'financeiro', 'prontuario', 'relatorios'],
+      pagamentos:         ['pagamentos', 'faturamento', 'financeiro', 'prontuario', 'relatorios', 'odonto'],
+      atendimentosOdonto: ['pagamentos', 'odonto', 'faturamento', 'prontuario'],
+      agendamentosOdonto: ['pacientes', 'agendamentos', 'odonto'],
+    };
+    const applyEvent = (key, fn) => {
+      if ((VIEWS_FOR_KEY[key] || []).includes(viewRef.current)) { fn(); }
+      else { staleData.current.add(key); }
+    };
+    const onPagamentoEvent = () => {
+      applyEvent('pagamentos', carregarPagamentos);
+      applyEvent('consultas', carregarConsultas);
+      applyEvent('atendimentosOdonto', carregarAtendimentosOdonto);
+    };
+
+    const unsubs = [
+      unsubStatus,
+      client.on('pacientes.created', () => applyEvent('pacientes', carregarPacientes)),
+      client.on('pacientes.updated', () => applyEvent('pacientes', carregarPacientes)),
+
+      client.on('atendimentos.created',        () => applyEvent('consultas', carregarConsultas)),
+      client.on('atendimentos.updated',        () => applyEvent('consultas', carregarConsultas)),
+      client.on('atendimentos.status_changed', () => applyEvent('consultas', carregarConsultas)),
+
+      client.on('pagamentos.created',        onPagamentoEvent),
+      client.on('pagamentos.updated',        onPagamentoEvent),
+      client.on('pagamentos.status_changed', onPagamentoEvent),
+
+      client.on('odonto.agendamento_created', () => applyEvent('agendamentosOdonto', carregarAgendamentosOdonto)),
+      client.on('odonto.agendamento_updated', () => applyEvent('agendamentosOdonto', carregarAgendamentosOdonto)),
+
+      client.on('odonto.atendimento_created', () => applyEvent('atendimentosOdonto', carregarAtendimentosOdonto)),
+      client.on('odonto.atendimento_updated', () => applyEvent('atendimentosOdonto', carregarAtendimentosOdonto)),
+
+      client.on('consultorios.updated', async () => {
+        try { const r = await api.consultorios.listar(); setConsultorios(r.data || []); } catch { /* ignora */ }
+      }),
+
+      client.on('salas.created', async () => {
+        try { const r = await api.salas.listar(); setSalas(r.data || []); } catch { /* ignora */ }
+      }),
+      client.on('salas.updated', async () => {
+        try { const r = await api.salas.listar(); setSalas(r.data || []); } catch { /* ignora */ }
+      }),
+    ];
+
+    client.connect();
+
+    return () => {
+      unsubs.forEach((fn) => fn());
+      client.disconnect();
+      realtimeRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userData?.id]); // reconecta apenas quando o usuário logado muda
+
+  // ── Fallback polling (3 min) quando SSE está offline ──────────────────────
+  useEffect(() => {
+    if (!userData || realtimeStatus !== REALTIME_STATUS.OFFLINE) return;
+    const interval = setInterval(() => setForceRefreshCount(c => c + 1), 3 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [userData, realtimeStatus]);
 
   async function criarUsuario(novoUsuario) {
     await api.usuarios.criar({
@@ -515,6 +797,7 @@ export default function App() {
       ativo:            novoUsuario.ativo !== false ? 1 : 0,
       permissions:      novoUsuario.permissions || [],
       crm:              novoUsuario.crm || null,
+      cro:              novoUsuario.cro || null,
       coren:            novoUsuario.coren || null,
       cargo:            novoUsuario.cargo || null,
       especialidade:    novoUsuario.especialidade || null,
@@ -540,6 +823,7 @@ export default function App() {
       ativo:            dados.ativo !== false ? 1 : 0,
       permissions:      dados.permissions,
       crm:              dados.crm,
+      cro:              dados.cro,
       coren:            dados.coren,
       cargo:            dados.cargo,
       especialidade:    dados.especialidade,
@@ -552,6 +836,7 @@ export default function App() {
       intervalo:        dados.intervalo,
       pausa_inicio:     dados.pausaInicio,
       pausa_fim:        dados.pausaFim,
+      ...(dados.senha ? { senha: dados.senha } : {}),
     });
     await carregarUsuarios();
   }
@@ -588,48 +873,110 @@ export default function App() {
     }
   }
 
+  async function criarSala(dados) {
+    await api.salas.criar(dados);
+    const r = await api.salas.listar();
+    setSalas(r.data || []);
+  }
+
+  async function atualizarSala(id, dados) {
+    await api.salas.atualizar(id, dados);
+    const r = await api.salas.listar();
+    setSalas(r.data || []);
+  }
+
+  async function excluirSala(id) {
+    await api.salas.excluir(id);
+    const r = await api.salas.listar();
+    setSalas(r.data || []);
+  }
+
   function encaminharParaPagamento(checkoutData) {
     setPagamentoCheckout(checkoutData);
     setView("pagamentos");
   }
 
-  async function adicionarPaciente(novoPaciente) {
-    await api.pacientes.criar({
-      nome:                novoPaciente.nome,
-      cpf:                 novoPaciente.cpf || null,
-      telefone:            novoPaciente.telefone || null,
-      data_nascimento:     novoPaciente.dataNascimento || null,
-      sexo:                novoPaciente.sexo || null,
-      email:               novoPaciente.email || null,
-      endereco:            novoPaciente.rua || novoPaciente.endereco || null,
-      cep:                 novoPaciente.cep || null,
-      plano_saude:         novoPaciente.convenio || null,
-      observacoes:         novoPaciente.observacoes || null,
-      alergias:            novoPaciente.alergias || null,
-      tipo_sanguineo:      novoPaciente.tipoSanguineo || null,
-      telefone_emergencia: novoPaciente.telefoneEmergencia || null,
+  function solicitarOverride(consulta) {
+    return new Promise((resolve) => {
+      setOverrideModal({
+        consulta,
+        onConfirm: (resultado) => {
+          setOverrideModal(null);
+          resolve({ aprovado: true, resultado });
+        },
+        onCancel: () => {
+          setOverrideModal(null);
+          resolve({ aprovado: false });
+        },
+      });
     });
+  }
+
+  function buildPacientePayload(p) {
+    return {
+      nome:                p.nome,
+      cpf:                 p.cpf || null,
+      telefone:            p.telefone || null,
+      data_nascimento:     p.dataNascimento || null,
+      sexo:                ({ Masculino: 'M', Feminino: 'F', Outro: 'outro' }[p.sexo] ?? null),
+      email:               p.email || null,
+      endereco:            p.rua || p.endereco || null,
+      bairro:              p.bairro || null,
+      cep:                 p.cep || null,
+      plano_saude:         p.convenio || null,
+      observacoes:         p.observacoes || null,
+      alergias:            p.alergias || null,
+      tipo_sanguineo:      p.tipoSanguineo || null,
+      telefone_emergencia: p.telefoneEmergencia || null,
+      nome_mae:            p.mae || null,
+      nome_pai:            p.pai || null,
+      ativo:               p.status === 'Inativo' ? 0 : 1,
+    };
+  }
+
+  async function adicionarPaciente(novoPaciente) {
+    await api.pacientes.criar(buildPacientePayload(novoPaciente));
+    await carregarPacientes();
+  }
+
+  async function atualizarPaciente(id, dados) {
+    await api.pacientes.atualizar(id, buildPacientePayload(dados));
     await carregarPacientes();
   }
 
   async function adicionarConsulta(novaConsulta) {
     const res = await api.atendimentos.criar({
-      nome_paciente:              novaConsulta.paciente || novaConsulta.nomePaciente || "",
-      usuario_id:                 null,
-      nome_medico:                novaConsulta.medico || novaConsulta.profissional || "",
-      profissional_firebase_id:   novaConsulta.profissionalId || novaConsulta.medicoId || "",
-      data:                       novaConsulta.data || new Date().toISOString().slice(0, 10),
-      hora:                       novaConsulta.hora || "",
-      tipo_atendimento:           novaConsulta.tipoAtendimento || "",
-      especialidade:               novaConsulta.especialidade || "",
-      observacoes:                novaConsulta.observacoesRecepcao || "",
-      status:                     "agendado",
+      nome_paciente:    novaConsulta.paciente || novaConsulta.nomePaciente || "",
+      usuario_id:       novaConsulta.medicoId || novaConsulta.profissionalId || novaConsulta.usuarioId || null,
+      nome_medico:      novaConsulta.medico || novaConsulta.profissional || "",
+      data:             novaConsulta.data || hojeISO(),
+      hora:             novaConsulta.hora || "",
+      tipo_atendimento: novaConsulta.tipoAtendimento || "",
+      especialidade:    novaConsulta.especialidade || "",
+      valor_consulta:   Number(novaConsulta.valorConsulta || 0),
+      observacoes:      novaConsulta.observacoesRecepcao || "",
+      status: (novaConsulta.tipoAtendimento || "").toLowerCase().includes("imediato") ? "aguardando" : "agendado",
     });
     await carregarConsultas();
     return res?.data;
   }
 
   async function iniciarAtendimento(id) {
+    const alvo = consultas.find((c) => String(c.id) === String(id));
+    if (alvo && isFuturo(alvo.data) && !alvo.antecipado_em) {
+      const { aprovado, resultado } = await solicitarOverride(alvo);
+      if (!aprovado) return;
+      const { acao, consultaAtualizada } = resultado;
+      setConsultas((prev) =>
+        prev.map((c) => String(c.id) === String(id) ? { ...c, ...consultaAtualizada } : c)
+      );
+      if (acao === "remarcar" && isFuturo(consultaAtualizada.data) && !consultaAtualizada.antecipado_em) {
+        toast.success("Atendimento remarcado. Aguarde a nova data agendada.");
+        await carregarConsultas();
+        return;
+      }
+      await carregarConsultas();
+    }
     await api.atendimentos.atualizar(id, { status: "em_atendimento" });
     await carregarConsultas();
   }
@@ -639,6 +986,13 @@ export default function App() {
   }
 
   async function finalizarAtendimento(id, prontuarioFinal) {
+    const alvo = consultas.find((c) => String(c.id) === String(id));
+    if (alvo && isFuturo(alvo.data) && !alvo.antecipado_em) {
+      toast.error(
+        "Não é possível finalizar um atendimento agendado para data futura sem autorização prévia."
+      );
+      return;
+    }
     const prontuario = {
       ...prontuarioFinal,
       medicoNome: userData?.nome || userData?.email || "",
@@ -653,7 +1007,8 @@ export default function App() {
   const indicadores = useMemo(() => {
     return {
       total: consultas.length,
-      agendadas: consultas.filter((c) => c.status === "agendado").length,
+      agendadas: consultas.filter((c) => ["agendado", "confirmado", "remarcado"].includes(c.status)).length,
+      aguardando: consultas.filter((c) => ["aguardando", "presente"].includes(c.status)).length,
       emAtendimento: consultas.filter((c) => c.status === "em_atendimento").length,
       altas: consultas.filter((c) => c.status === "finalizado").length,
       totalPacientes: pacientes.length,
@@ -680,6 +1035,8 @@ export default function App() {
       "normas",
       "estoque",
       "relatorios",
+      "cadastros",
+      "configuracoes",
     ];
 
     return orderedViews.find((item) => hasPermission(userData, item)) || "dashboard";
@@ -694,6 +1051,7 @@ export default function App() {
     if (userData && view && !hasPermission(userData, view)) {
       setView(getFirstAllowedView());
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- getFirstAllowedView closes over userData which is in deps
   }, [userData, view, isMedico]);
 
   function renderView() {
@@ -703,12 +1061,23 @@ export default function App() {
           <Pacientes
             pacientes={pacientes}
             consultas={consultas}
+            agendamentosOdonto={agendamentosOdonto}
             pagamentos={pagamentos}
             users={users}
             procedimentosOdonto={procedimentosOdonto}
             onAdicionarPaciente={adicionarPaciente}
+            onAtualizarPaciente={atualizarPaciente}
             onAdicionarConsulta={adicionarConsulta}
             onEncaminharParaPagamento={encaminharParaPagamento}
+            onAtualizarConsulta={async (id, dados) => {
+              await api.atendimentos.atualizar(id, dados);
+              await Promise.all([carregarConsultas(), carregarPagamentos()]);
+            }}
+            onAtualizarAgendamentoOdonto={async (id, dados) => {
+              await api.agendamentosOdonto.atualizar(id, dados);
+              await carregarAgendamentosOdonto();
+            }}
+            onRefreshAgendamentosOdonto={carregarAgendamentosOdonto}
           />
         );
 
@@ -718,10 +1087,17 @@ export default function App() {
             pacientes={pacientes}
             consultas={consultas}
             pagamentos={pagamentos}
+            carregando={!pagamentosCarregados}
+            atendimentosOdonto={atendimentosOdonto}
             pagamentoCheckout={pagamentoCheckout}
             onLimparCheckout={() => setPagamentoCheckout(null)}
             onIrParaFinanceiro={() => setView("financeiro")}
             onIrParaRelatorios={() => setView("relatorios")}
+            onPagamentoCriado={() => Promise.all([carregarPagamentos(), carregarConsultas(), carregarAtendimentosOdonto()])}
+            onAtualizarAtendimentoOdonto={async (id, dados) => {
+              await api.atendimentosOdonto.atualizar(id, dados);
+              await carregarAtendimentosOdonto();
+            }}
           />
         );
 
@@ -729,11 +1105,19 @@ export default function App() {
         return (
           <Agendamentos
             consultas={consultas}
-            agendamentosOdonto={[...atendimentosOdonto]}
-            onAbrirAtendimento={(consulta) => {
-              setConsultaSelecionadaExterna(consulta);
-              setView("medicos");
+            agendamentosOdonto={agendamentosOdonto}
+            users={users}
+            onNavegar={(destino) => setView(destino)}
+            onAtualizarConsulta={async (id, dados) => {
+              await api.atendimentos.atualizar(id, dados);
+              await Promise.all([carregarConsultas(), carregarPagamentos()]);
             }}
+            onAtualizarAgendamentoOdonto={async (id, dados) => {
+              await api.agendamentosOdonto.atualizar(id, dados);
+              await carregarAgendamentosOdonto();
+            }}
+            onCriarAtendimentoOdonto={criarAtendimentoOdontoDeAgendamento}
+            onEncaminharParaPagamento={encaminharParaPagamento}
           />
         );
 
@@ -741,7 +1125,6 @@ export default function App() {
         return (
           <Medicos
             consultas={consultas}
-            pagamentos={pagamentos}
             pacientes={pacientes}
             consultaSelecionadaExterna={consultaSelecionadaExterna}
             limparConsultaExterna={() => setConsultaSelecionadaExterna(null)}
@@ -749,11 +1132,23 @@ export default function App() {
             onIniciarAtendimento={iniciarAtendimento}
             onSalvarProntuario={salvarProntuario}
             onFinalizarAtendimento={finalizarAtendimento}
+            onSolicitarOverride={solicitarOverride}
           />
         );
 
       case "enfermagem":
-        return <Enfermagem />;
+        return (
+          <Enfermagem
+            consultas={consultas}
+            pacientes={pacientes}
+            procedimentosOdonto={procedimentosOdonto}
+            onRefresh={carregarConsultas}
+            onEncaminharParaPagamento={(checkout) => {
+              setPagamentoCheckout(checkout);
+              setView("pagamentos");
+            }}
+          />
+        );
 
       case "odonto":
         return (
@@ -764,12 +1159,15 @@ export default function App() {
             pagamentos={pagamentos}
             procedimentosOdonto={procedimentosOdonto}
             atendimentosOdonto={atendimentosOdonto}
+            agendamentosOdonto={agendamentosOdonto}
+            onRefreshAtendimentosOdonto={carregarAtendimentosOdonto}
+            onRefreshAgendamentosOdonto={carregarAgendamentosOdonto}
             onIrParaPagamentos={() => setView("pagamentos")}
           />
         );
 
       case "faturamento":
-        return <Faturamento />;
+        return <Faturamento pagamentosApp={pagamentos} atendimentosOdonto={atendimentosOdonto} onNavegar={setView} />;
 
       case "financeiro":
         return (
@@ -782,20 +1180,16 @@ export default function App() {
           />
         );
 
-      case "administracao":
-        return (
-          <Administracao
-            users={users}
-            consultorios={consultorios}
-            onCriarUsuario={criarUsuario}
-            onAtualizarUsuario={atualizarUsuario}
-            onExcluirUsuario={excluirUsuario}
-            onLiberarConsultorio={liberarConsultorioDeUsuario}
-          />
-        );
-
       case "normas":
         return <Normas />;
+
+      case "cadastros":
+        return (
+          <Cadastros
+            procedimentosOdonto={procedimentosOdonto}
+            onRefreshProcedimentosOdonto={carregarProcedimentosOdonto}
+          />
+        );
 
       case "prontuario":
         return (
@@ -804,6 +1198,24 @@ export default function App() {
             atendimentosOdonto={atendimentosOdonto}
             pacientes={pacientes}
             pagamentos={pagamentos}
+          />
+        );
+
+      case "administracao":
+      case "configuracoes":
+        return (
+          <Configuracoes
+            users={users}
+            consultorios={consultorios}
+            salas={salas}
+            userData={userData}
+            onCriarUsuario={criarUsuario}
+            onAtualizarUsuario={atualizarUsuario}
+            onExcluirUsuario={excluirUsuario}
+            onLiberarConsultorio={liberarConsultorioDeUsuario}
+            onCriarSala={criarSala}
+            onAtualizarSala={atualizarSala}
+            onExcluirSala={excluirSala}
           />
         );
 
@@ -854,6 +1266,8 @@ export default function App() {
             users={users}
             atendimentosOdonto={atendimentosOdonto}
             estoque={estoque}
+            userData={userData}
+            onNavigate={(v) => setView(v)}
             onIrParaEstoque={() => setView("estoque")}
             onIrParaFinanceiro={() => setView("financeiro")}
             onIrParaPagamentos={() => setView("pagamentos")}
@@ -878,7 +1292,9 @@ export default function App() {
     estoque: Package,
     relatorios: BarChart2,
     normas: BookOpen,
-    administracao: Settings,
+    administracao:  Settings,
+    cadastros:      FolderOpen,
+    configuracoes:  UserCog,
   };
 
   const VIEW_TITLES = {
@@ -894,8 +1310,10 @@ export default function App() {
     relatorios: "Relatórios",
     estoque: "Estoque",
     prontuario: "Prontuário",
-    normas: "Normas",
-    administracao: "Administração",
+    normas:        "Normas",
+    administracao: "Configurações",
+    cadastros:     "Cadastros",
+    configuracoes: "Configurações",
   };
 
   const VIEW_SECTIONS = {
@@ -910,8 +1328,10 @@ export default function App() {
     faturamento: "Financeiro",
     relatorios: "Financeiro",
     estoque: "Financeiro",
-    administracao: "Sistema",
-    normas: "Sistema",
+    administracao:  "Sistema",
+    normas:         "Sistema",
+    cadastros:      "Sistema",
+    configuracoes:  "Sistema",
   };
 
   const ROLE_LABELS = {
@@ -967,26 +1387,28 @@ export default function App() {
       await logout();
     } catch (error) {
       console.error("Erro ao sair:", error);
-      alert("Não foi possível sair do sistema.");
+      toast.error("Não foi possível sair do sistema.");
     }
   }
 
   if (loading) {
-    return <div style={{ padding: "40px", textAlign: "center" }}>Carregando sistema...</div>;
+    return (
+      <div className="nx-loading-screen">
+        <div className="nx-spinner" />
+        <p>Iniciando o sistema…</p>
+      </div>
+    );
   }
 
   if (!userData) {
     return <LoginScreen />;
   }
 
-  if (dataLoading) {
-    return <div style={{ padding: "40px", textAlign: "center" }}>Carregando dados...</div>;
-  }
-
   if (userData?.atende_pacientes && !consultorioConfirmadoSessao) {
     return (
       <EscolherConsultorio
         consultorios={consultorios}
+        salasDef={salas}
         userData={userData}
         onSelecionar={selecionarConsultorio}
         onSair={sairSistema}
@@ -999,8 +1421,16 @@ export default function App() {
       <aside className={`sidebar ${sidebarMinimizada ? "sidebar-collapsed" : ""}`}>
         <div className="sidebar-top">
           <div className="sidebar-brand">
-            <h2 className="brand-title">NexusCare</h2>
-            <p className="brand-subtitle">Healthcare System</p>
+            <div className="sidebar-logo-wordmark">
+              <svg className="sidebar-logo-icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M24 41C24 41 5 27.5 5 15.5C5 10.8 8.8 7 13.5 7C17.2 7 20.4 9.2 22 12.5L24 16.5L26 12.5C27.6 9.2 30.8 7 34.5 7C39.2 7 43 10.8 43 15.5C43 27.5 24 41 24 41Z" stroke="#C4B5FD" strokeWidth="2.5" fill="rgba(196,181,253,0.12)"/>
+                <path d="M9 22H15L17.5 16.5L20.5 27L23 19L25.5 23L28 22H39" stroke="#C4B5FD" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              <div className="sidebar-logo-textblock">
+                <h2 className="brand-title" style={{ margin: 0 }}>Vynor<span style={{ color: "#C4B5FD" }}> Clinic</span></h2>
+                <p className="brand-subtitle">Healthcare System</p>
+              </div>
+            </div>
           </div>
           <button
             className="sidebar-toggle-btn"
@@ -1049,13 +1479,14 @@ export default function App() {
             {menu("Estoque", "estoque")}
           </div>
 
-          {hasAnyInGroup(["administracao", "normas"]) && (
+          {hasAnyInGroup(["normas", "cadastros", "configuracoes"]) && (
             <div className="menu-section-toggle" style={{ cursor: "default", pointerEvents: "none" }}>
               Sistema
             </div>
           )}
           <div className="menu-group">
-            {menu("Administração", "administracao")}
+            {menu("Cadastros", "cadastros")}
+            {menu("Configurações", "configuracoes")}
             {menu("Normas", "normas")}
           </div>
         </div>
@@ -1102,7 +1533,7 @@ export default function App() {
             <div className="topbar-subtitle">
               {consultorioAtual
                 ? `${consultorioAtual.nome} · ${consultorioAtual.medicoNome}`
-                : "NexusCare Healthcare System"}
+                : "Vynor Clinic"}
             </div>
           </div>
 
@@ -1194,6 +1625,48 @@ export default function App() {
               )}
             </div>
 
+            {/* Indicador de conexão realtime */}
+            {(() => {
+              const cfg = {
+                [REALTIME_STATUS.ONLINE]:       { color: "#16a34a", label: "Tempo real", dot: "#22c55e" },
+                [REALTIME_STATUS.CONNECTING]:   { color: "#d97706", label: "Conectando", dot: "#fbbf24" },
+                [REALTIME_STATUS.RECONNECTING]: { color: "#d97706", label: "Reconectando", dot: "#fbbf24" },
+                [REALTIME_STATUS.OFFLINE]:      { color: "#64748b", label: "Polling", dot: "#94a3b8" },
+              }[realtimeStatus] || { color: "#64748b", label: "—", dot: "#94a3b8" };
+              return (
+                <div
+                  title={`Conexão: ${cfg.label}`}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "5px",
+                    background: cfg.color + "12",
+                    border: `1px solid ${cfg.color}30`,
+                    borderRadius: "999px",
+                    padding: "3px 9px",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    color: cfg.color,
+                    flexShrink: 0,
+                    cursor: "default",
+                    userSelect: "none",
+                  }}
+                >
+                  <span style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    background: cfg.dot,
+                    flexShrink: 0,
+                    animation: realtimeStatus === REALTIME_STATUS.RECONNECTING
+                      ? "pulse-rt 1.2s ease-in-out infinite"
+                      : "none",
+                  }} />
+                  {cfg.label}
+                </div>
+              );
+            })()}
+
             {userData?.role && (
               <div style={{
                 background: (ROLE_COLORS[userData.role] || "#64748b") + "18",
@@ -1215,13 +1688,26 @@ export default function App() {
           </div>
         </div>
 
-        <main className="main-content">{renderView()}</main>
+        <main className="main-content">
+          <Suspense fallback={<div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "60vh", color: "var(--text-secondary, #64748b)", fontSize: 15 }}>Carregando módulo…</div>}>
+            {renderView()}
+          </Suspense>
+        </main>
       </div>
 
       {mostrarPerfil && (
         <ModalPerfil
           userData={userData}
           onClose={() => setMostrarPerfil(false)}
+        />
+      )}
+
+      {overrideModal && (
+        <ModalAntecipacaoData
+          consulta={overrideModal.consulta}
+          userData={userData}
+          onConfirm={overrideModal.onConfirm}
+          onCancel={overrideModal.onCancel}
         />
       )}
     </div>

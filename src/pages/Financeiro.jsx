@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import api, { uploadAnexo } from "../services/api";
 import { useAuth } from "../context/AuthContext";
+import { useToast } from "../context/ToastContext";
+import { hojeISO, normalizarFormaPagamento, normalizarOrigem, dateToLocalISO } from "../utils/dateUtils";
+import {
+  isFaturamentoConfirmado,
+  isPagamentoPendente,
+  valorCanonicoPagamento,
+} from "../utils/financeUtils";
+import EmptyState from "../components/EmptyState";
+import AlertaBanner from "../components/AlertaBanner";
 
 const METRICA_COR = { receita: "#10b981", despesa: "#ef4444", saldo: "#6366f1" };
 
@@ -113,11 +122,15 @@ function LineChart({ dados, metrica, cor, formatMoeda }) {
 
 export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrParaPagamentos }) {
   const { userData } = useAuth();
+  const toast = useToast();
   const [abaAtiva, setAbaAtiva] = useState("resumo");
   const [contasPagar, setContasPagar] = useState([]);
   const [anexosFinanceiros, setAnexosFinanceiros] = useState([]);
   const [historicoFinanceiro, setHistoricoFinanceiro] = useState([]);
-  const [carregando, setCarregando] = useState(false);
+  const [carregandoContas, setCarregandoContas] = useState(false);
+  const [contasPagarCarregadas, setContasPagarCarregadas] = useState(false);
+  const [paginaContas, setPaginaContas] = useState(1);
+  const POR_PAGINA_CONTAS = 20;
 
   const [periodo, setPeriodo] = useState("30dias");
   const [periodoCustomInicio, setPeriodoCustomInicio] = useState("");
@@ -130,19 +143,6 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
   const [salvandoAnexo, setSalvandoAnexo] = useState(false);
 
   const [fornecedores, setFornecedores] = useState([]);
-  const [fornecedorSelecionado, setFornecedorSelecionado] = useState(null);
-  const [modoEdicaoFornecedor, setModoEdicaoFornecedor] = useState(false);
-  const [salvandoFornecedor, setSalvandoFornecedor] = useState(false);
-  const [novoFornecedor, setNovoFornecedor] = useState({
-    nome: "",
-    cnpj: "",
-    telefone: "",
-    email: "",
-    categoria: "",
-    contato: "",
-    endereco: "",
-    observacoes: "",
-  });
 
   const [filtros, setFiltros] = useState({
     fornecedor: "",
@@ -197,27 +197,32 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
     observacao: "",
   });
 
-  // ── Polling MySQL: contas a pagar e fornecedores ─────────────────────────
-  useEffect(() => {
-    async function carregarContasPagar() {
-      try {
-        const res = await api.contasPagar.listar();
-        setContasPagar(res.data || []);
-      } catch { setContasPagar([]); }
-    }
+  // ── Contas a pagar: carrega somente quando a aba "pagar" é aberta ────────
+  const carregarContasPagar = useCallback(async () => {
+    setCarregandoContas(true);
+    try {
+      const res = await api.contasPagar.listar();
+      setContasPagar(res.data || []);
+      setContasPagarCarregadas(true);
+    } catch { setContasPagar([]); toast.error("Não foi possível carregar as contas a pagar."); }
+    finally { setCarregandoContas(false); }
+  }, [toast]);
 
+  useEffect(() => {
+    if (abaAtiva === "pagar" && !contasPagarCarregadas) {
+      carregarContasPagar();
+    }
+  }, [abaAtiva, contasPagarCarregadas, carregarContasPagar]);
+
+  // ── Fornecedores: carrega no mount (necessário para o formulário) ─────────
+  useEffect(() => {
     async function carregarFornecedores() {
       try {
         const res = await api.fornecedores.listar();
         setFornecedores(res.data || []);
       } catch { setFornecedores([]); }
     }
-
-    carregarContasPagar();
     carregarFornecedores();
-
-    const timer = setInterval(carregarContasPagar, 30000);
-    return () => clearInterval(timer);
   }, []);
 
   const carregarAnexos = useCallback(async (contaId = null) => {
@@ -249,7 +254,7 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
   }
 
   function dataAtualFormatada() {
-    return new Date().toISOString().split("T")[0];
+    return hojeISO();
   }
 
   function numero(valor) {
@@ -354,7 +359,7 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
       !novaConta.valorBruto ||
       !novaConta.dataVencimento
     ) {
-      alert("Preencha fornecedor, número da NF, valor bruto e vencimento.");
+      toast.warn("Preencha fornecedor, número da NF, valor bruto e vencimento.");
       return;
     }
 
@@ -392,19 +397,18 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
         const statusAnterior = contaSelecionada.status || "";
         await api.contasPagar.atualizar(contaSelecionada.id, payload);
         await registrarHistorico({ contaId: contaSelecionada.id, alteracao: "Conta a pagar editada", statusAnterior, novoStatus: novaConta.status });
-        alert("Conta atualizada com sucesso.");
+        toast.success("Conta atualizada com sucesso.");
       } else {
         const res = await api.contasPagar.criar(payload);
         await registrarHistorico({ contaId: res.data.id, alteracao: "Conta a pagar criada", statusAnterior: "", novoStatus: novaConta.status });
-        alert("Conta cadastrada com sucesso.");
+        toast.success("Conta cadastrada com sucesso.");
       }
 
-      const resCp = await api.contasPagar.listar();
-      setContasPagar(resCp.data || []);
+      await carregarContasPagar();
       limparConta();
     } catch (error) {
       console.error("Erro ao salvar conta a pagar:", error);
-      alert("Não foi possível salvar a conta.");
+      toast.error("Não foi possível salvar a conta.");
     } finally {
       setSalvandoConta(false);
     }
@@ -443,22 +447,16 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
   }
 
   async function excluirConta(conta) {
-    const confirmar = window.confirm(
-      `Deseja excluir a conta da NF ${conta.numeroNotaFiscal}?`
-    );
-
-    if (!confirmar) return;
-
+    if (!await toast.confirm(`Deseja excluir a conta da NF ${conta.numeroNotaFiscal}?`)) return;
     try {
       await api.contasPagar.excluir(conta.id);
       await registrarHistorico({ contaId: conta.id, alteracao: "Conta a pagar excluída", statusAnterior: conta.status || "", novoStatus: "Excluída" });
       if (contaSelecionada?.id === conta.id) limparConta();
-      const res = await api.contasPagar.listar();
-      setContasPagar(res.data || []);
-      alert("Conta excluída com sucesso.");
+      await carregarContasPagar();
+      toast.success("Conta excluída com sucesso.");
     } catch (error) {
       console.error("Erro ao excluir conta:", error);
-      alert("Não foi possível excluir a conta.");
+      toast.error("Não foi possível excluir a conta.");
     }
   }
 
@@ -471,51 +469,22 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
         valor_pendente: 0,
       });
       await registrarHistorico({ contaId: conta.id, alteracao: "Conta marcada como paga", statusAnterior: conta.status || "", novoStatus: "Pago" });
-      const res = await api.contasPagar.listar();
-      setContasPagar(res.data || []);
-      alert("Conta marcada como paga.");
+      await carregarContasPagar();
+      toast.success("Conta marcada como paga.");
     } catch (error) {
       console.error("Erro ao marcar conta como paga:", error);
-      alert("Não foi possível marcar como paga.");
-    }
-  }
-
-  async function marcarComoPago(pagamentoId) {
-    try {
-      await api.pagamentos.atualizar(pagamentoId, {
-        status_pagamento: "Pago",
-        status:           "pago",
-        data_pagamento:   dataAtualFormatada(),
-      });
-      alert("Pagamento marcado como pago.");
-    } catch (error) {
-      console.error("Erro ao marcar como pago:", error);
-      alert("Não foi possível atualizar o pagamento.");
-    }
-  }
-
-  async function cancelarPagamento(pagamentoId) {
-    if (!window.confirm("Deseja cancelar este pagamento?")) return;
-    try {
-      await api.pagamentos.atualizar(pagamentoId, {
-        status_pagamento: "Cancelado",
-        status:           "cancelado",
-      });
-      alert("Pagamento cancelado.");
-    } catch (error) {
-      console.error("Erro ao cancelar pagamento:", error);
-      alert("Não foi possível cancelar o pagamento.");
+      toast.error("Não foi possível marcar como paga.");
     }
   }
 
   async function adicionarImposto() {
     if (!contaSelecionada?.id) {
-      alert("Selecione ou salve uma conta antes de adicionar impostos.");
+      toast.warn("Selecione ou salve uma conta antes de adicionar impostos.");
       return;
     }
 
     if (!novoImposto.tipoImposto || !novoImposto.valorRetido) {
-      alert("Informe o tipo de imposto e o valor retido.");
+      toast.warn("Informe o tipo de imposto e o valor retido.");
       return;
     }
 
@@ -553,20 +522,20 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
         observacao: "",
       });
 
-      alert("Imposto adicionado.");
+      toast.success("Imposto adicionado.");
     } catch (error) {
       console.error("Erro ao adicionar imposto:", error);
-      alert("Não foi possível adicionar o imposto.");
+      toast.error("Não foi possível adicionar o imposto.");
     }
   }
 
   async function enviarAnexo() {
     if (!contaSelecionada?.id) {
-      alert("Selecione ou salve uma conta antes de adicionar anexos.");
+      toast.warn("Selecione ou salve uma conta antes de adicionar anexos.");
       return;
     }
     if (!novoAnexo.arquivo) {
-      alert("Selecione um arquivo para anexar.");
+      toast.warn("Selecione um arquivo para anexar.");
       return;
     }
 
@@ -591,17 +560,17 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
       await carregarAnexos();
 
       setNovoAnexo({ tipoDocumento: "Nota Fiscal", descricao: "", arquivo: null });
-      alert("Anexo enviado com sucesso.");
+      toast.success("Anexo enviado com sucesso.");
     } catch (error) {
       console.error("Erro ao enviar anexo:", error);
-      alert("Não foi possível enviar o anexo.");
+      toast.error("Não foi possível enviar o anexo.");
     } finally {
       setSalvandoAnexo(false);
     }
   }
 
   async function excluirAnexo(anexo) {
-    if (!window.confirm("Deseja excluir este anexo?")) return;
+    if (!await toast.confirm("Deseja excluir este anexo?")) return;
     try {
       await api.anexosFinanceiros.excluir(anexo.id);
       await registrarHistorico({
@@ -611,105 +580,16 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
         novoStatus:     contaSelecionada?.status || "",
       });
       await carregarAnexos();
-      alert("Anexo excluído.");
+      toast.success("Anexo excluído.");
     } catch (error) {
       console.error("Erro ao excluir anexo:", error);
-      alert("Não foi possível excluir o anexo.");
+      toast.error("Não foi possível excluir o anexo.");
     }
   }
 
-  const dadosFinanceiros = useMemo(() => {
-    const hoje = new Date();
-    const mesAtual = hoje.getMonth();
-    const anoAtual = hoje.getFullYear();
+  const contasAReceber = pagamentos.filter(isPagamentoPendente);
 
-    const pagamentosDoMes = pagamentos.filter((item) => {
-      const dataBase = item.dataPagamento || item.data || "";
-      if (!dataBase) return false;
-      const data = new Date(`${dataBase}T00:00:00`);
-      return data.getMonth() === mesAtual && data.getFullYear() === anoAtual;
-    });
-
-    const contasPagarMes = contasPagar.filter((item) => {
-      const dataBase = item.dataPagamento || item.dataVencimento;
-      if (!dataBase) return false;
-      const data = new Date(`${dataBase}T00:00:00`);
-      return data.getMonth() === mesAtual && data.getFullYear() === anoAtual;
-    });
-
-    const receitaMes = pagamentosDoMes
-      .filter((item) => (item.statusPagamento || item.status || "").toLowerCase() === "pago")
-      .reduce((total, item) => total + Number(item.valor || 0), 0);
-
-    const despesasMes = contasPagarMes
-      .filter((item) => item.status === "Pago")
-      .reduce(
-        (total, item) =>
-          total + Number(item.valorPago || item.valorLiquidoPagar || item.valorBruto || 0),
-        0
-      );
-
-    const statusNorm = (item) => (item.statusPagamento || item.status || "").toLowerCase();
-
-    const contasReceber = pagamentos
-      .filter((item) => statusNorm(item) === "pendente")
-      .reduce((total, item) => total + Number(item.valor || 0), 0);
-
-    const contasPagas = pagamentos
-      .filter((item) => statusNorm(item) === "pago")
-      .reduce((total, item) => total + Number(item.valor || 0), 0);
-
-    const contasPendentes = pagamentos.filter(
-      (item) => statusNorm(item) === "pendente"
-    ).length;
-
-    const contasCanceladas = pagamentos.filter(
-      (item) => statusNorm(item) === "cancelado"
-    ).length;
-
-    const cortesias = pagamentos.filter(
-      (item) => statusNorm(item) === "cortesia"
-    ).length;
-
-    const contasPagarPendentes = contasPagar.filter(
-      (item) => item.status === "Pendente"
-    ).length;
-
-    const contasPagarPagas = contasPagar.filter((item) => item.status === "Pago").length;
-
-    const contasVencidas = contasPagar.filter((item) => {
-      if (!item.dataVencimento || item.status === "Pago" || item.status === "Cancelado") {
-        return false;
-      }
-
-      return new Date(`${item.dataVencimento}T00:00:00`) < new Date(dataAtualFormatada());
-    }).length;
-
-    const saldoPrevisto = receitaMes + contasReceber - despesasMes;
-
-    return {
-      receitaMes,
-      despesasMes,
-      saldoPrevisto,
-      contasReceber,
-      contasPagas,
-      contasPendentes,
-      contasCanceladas,
-      cortesias,
-      contasPagarPendentes,
-      contasPagarPagas,
-      contasVencidas,
-      totalMovimentacoes: pagamentos.length + contasPagar.length,
-    };
-  }, [pagamentos, contasPagar]);
-
-  const contasAReceber = pagamentos.filter(
-    (item) => (item.statusPagamento || item.status || "").toLowerCase() === "pendente"
-  );
-
-  const contasPagas = pagamentos.filter(
-    (item) => (item.statusPagamento || item.status || "").toLowerCase() === "pago"
-  );
+  const contasPagas = pagamentos.filter(isFaturamentoConfirmado);
 
   const contasPagarFiltradas = useMemo(() => {
     return contasPagar.filter((item) => {
@@ -746,6 +626,17 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
     });
   }, [contasPagar, filtros]);
 
+  // Reset page when filters change
+  useEffect(() => {
+    setPaginaContas(1);
+  }, [filtros]);
+
+  const totalPaginasContas = Math.max(1, Math.ceil(contasPagarFiltradas.length / POR_PAGINA_CONTAS));
+  const contasPagarPagina = contasPagarFiltradas.slice(
+    (paginaContas - 1) * POR_PAGINA_CONTAS,
+    paginaContas * POR_PAGINA_CONTAS
+  );
+
   const anexosDaConta = anexosFinanceiros.filter(
     (item) => String(item.conta_id) === String(contaSelecionada?.id)
   );
@@ -759,10 +650,10 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
       id: `pagamento-${item.id}`,
       data: item.dataPagamento || item.data || "",
       tipo: "Entrada",
-      origem: item.origem === "odonto" ? "Odontologia" : item.origem || "Recepção",
+      origem: normalizarOrigem(item.origem),
       descricao: item.tipoAtendimento || item.descricao || item.servico || "Pagamento de paciente",
       pessoa: item.paciente || item.nomePaciente || "—",
-      forma: item.formaPagamento || "—",
+      forma: normalizarFormaPagamento(item.formaPagamento) || "—",
       status: item.statusPagamento || item.status || "—",
       categoria: "Receita",
       valor: Number(item.valor || 0),
@@ -792,7 +683,7 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
     const mapa = {};
 
     pagamentos.forEach((item) => {
-      const forma = item.formaPagamento || "Não informado";
+      const forma = normalizarFormaPagamento(item.formaPagamento) || "Não informado";
       mapa[forma] = (mapa[forma] || 0) + Number(item.valor || 0);
     });
 
@@ -826,8 +717,56 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
     return { ini, fim: fimDia };
   }, [periodo, periodoCustomInicio, periodoCustomFim]);
 
+  const contasVencidas = useMemo(() => {
+    const hoje = new Date();
+    hoje.setHours(0, 0, 0, 0);
+    return contasPagar.filter((c) => {
+      const venc = parseDateF(c.dataVencimento);
+      const pago = (c.status || "").toLowerCase() === "pago";
+      return venc && venc < hoje && !pago;
+    });
+  }, [contasPagar]);
+
+  const alertasFinanceiros = useMemo(() => {
+    const lista = [];
+    if (contasVencidas.length > 0) {
+      const total = contasVencidas.reduce((s, c) => s + Number(c.valorLiquidoPagar || c.valorBruto || 0), 0);
+      lista.push({
+        tipo: "urgente",
+        titulo: `${contasVencidas.length} conta(s) a pagar vencida(s)`,
+        detalhe: `Total: ${total.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}`,
+        acao: "Ver contas",
+        onAcao: () => setAbaAtiva("pagar"),
+      });
+    }
+    return lista;
+  }, [contasVencidas]);
+
+  // ── Fonte de verdade unificada (Fase 2): puxa /financeiro/kpis-unificados
+  // sempre que o período mudar. Fallback para cálculo local se backend indisponível.
+  const [kpisUnif, setKpisUnif] = useState(null);
+  useEffect(() => {
+    const { ini, fim } = rangePeriodo;
+    const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    let cancel = false;
+    api.financeiro.kpisUnificados({ inicio: fmt(ini), fim: fmt(fim) })
+      .then(r => { if (!cancel && r?.data?.totais) setKpisUnif(r.data); })
+      .catch(() => { if (!cancel) setKpisUnif(null); });
+    return () => { cancel = true; };
+  }, [rangePeriodo]);
+
   const kpisDashboard = useMemo(() => {
     const { ini, fim } = rangePeriodo;
+    if (kpisUnif?.totais) {
+      // Backend é a fonte primária. Despesas saem do mesmo cálculo.
+      const t = kpisUnif.totais;
+      return {
+        receita:  Number(t.receita_confirmada || 0),
+        despesas: Number(t.despesas_periodo   || 0),
+        saldo:    Number(t.saldo              || 0),
+        pendentes: Number(t.pendente_total    || 0),
+      };
+    }
     const pagsFiltrados = pagamentos.filter(p => {
       const d = parseDateF(p.dataPagamento || p.data);
       return d && d >= ini && d <= fim;
@@ -837,16 +776,16 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
       return d && d >= ini && d <= fim;
     });
     const receita = pagsFiltrados
-      .filter(p => (p.statusPagamento || p.status || "").toLowerCase() === "pago")
-      .reduce((t, p) => t + Number(p.valor || 0), 0);
+      .filter(isFaturamentoConfirmado)
+      .reduce((t, p) => t + valorCanonicoPagamento(p), 0);
     const despesas = despFiltradas
       .filter(c => c.status === "Pago")
       .reduce((t, c) => t + Number(c.valorPago || c.valorLiquidoPagar || c.valorBruto || 0), 0);
     const pendentes = pagamentos
-      .filter(p => (p.statusPagamento || p.status || "").toLowerCase() === "pendente")
-      .reduce((t, p) => t + Number(p.valor || 0), 0);
+      .filter(isPagamentoPendente)
+      .reduce((t, p) => t + valorCanonicoPagamento(p), 0);
     return { receita, despesas, saldo: receita - despesas, pendentes };
-  }, [pagamentos, contasPagar, rangePeriodo]);
+  }, [pagamentos, contasPagar, rangePeriodo, kpisUnif]);
 
   const chartDados = useMemo(() => {
     const { ini, fim } = rangePeriodo;
@@ -854,13 +793,13 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
     const cur = new Date(ini);
     cur.setHours(0, 0, 0, 0);
     while (cur <= fim) {
-      dias.push(cur.toISOString().slice(0, 10));
+      dias.push(dateToLocalISO(cur));
       cur.setDate(cur.getDate() + 1);
     }
     return dias.map(diaStr => {
       const receita = pagamentos
-        .filter(p => (p.dataPagamento || p.data || "").slice(0, 10) === diaStr && (p.statusPagamento || p.status || "").toLowerCase() === "pago")
-        .reduce((t, p) => t + Number(p.valor || 0), 0);
+        .filter(p => (p.dataPagamento || p.data || "").slice(0, 10) === diaStr && isFaturamentoConfirmado(p))
+        .reduce((t, p) => t + valorCanonicoPagamento(p), 0);
       const despesa = contasPagar
         .filter(c => (c.dataPagamento || c.dataVencimento || "").slice(0, 10) === diaStr && c.status === "Pago")
         .reduce((t, c) => t + Number(c.valorPago || c.valorLiquidoPagar || c.valorBruto || 0), 0);
@@ -874,11 +813,11 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
     pagamentos
       .filter(p => {
         const d = parseDateF(p.dataPagamento || p.data);
-        return d && d >= ini && d <= fim && (p.statusPagamento || p.status || "").toLowerCase() === "pago";
+        return d && d >= ini && d <= fim && isFaturamentoConfirmado(p);
       })
       .forEach(p => {
-        const o = p.origem === "odonto" ? "Odontologia" : (p.origem || "Recepção");
-        mapa[o] = (mapa[o] || 0) + Number(p.valor || 0);
+        const o = normalizarOrigem(p.origem);
+        mapa[o] = (mapa[o] || 0) + valorCanonicoPagamento(p);
       });
     return Object.entries(mapa).map(([origem, valor]) => ({ origem, valor })).sort((a, b) => b.valor - a.valor);
   }, [pagamentos, rangePeriodo]);
@@ -914,75 +853,6 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
     if (periodo === "custom" && periodoCustomInicio && periodoCustomFim) return `${periodoCustomInicio} → ${periodoCustomFim}`;
     return "Últimos 30 dias";
   }, [periodo, periodoCustomInicio, periodoCustomFim]);
-
-  function limparFornecedor() {
-    setFornecedorSelecionado(null);
-    setModoEdicaoFornecedor(false);
-    setNovoFornecedor({ nome: "", cnpj: "", telefone: "", email: "", categoria: "", contato: "", endereco: "", observacoes: "" });
-  }
-
-  function editarFornecedor(f) {
-    setFornecedorSelecionado(f);
-    setModoEdicaoFornecedor(true);
-    setNovoFornecedor({
-      nome: f.nome || "",
-      cnpj: f.cnpj || "",
-      telefone: f.telefone || "",
-      email: f.email || "",
-      categoria: f.categoria || "",
-      contato: f.contato || "",
-      endereco: f.endereco || "",
-      observacoes: f.observacoes || "",
-    });
-  }
-
-  async function salvarFornecedor() {
-    if (!novoFornecedor.nome.trim()) {
-      alert("Informe o nome do fornecedor.");
-      return;
-    }
-    try {
-      setSalvandoFornecedor(true);
-      const payload = {
-        nome: novoFornecedor.nome.trim(),
-        cnpj: novoFornecedor.cnpj.trim(),
-        telefone: novoFornecedor.telefone.trim(),
-        email: novoFornecedor.email.trim(),
-        categoria: novoFornecedor.categoria.trim(),
-        contato: novoFornecedor.contato.trim(),
-        endereco: novoFornecedor.endereco.trim(),
-        observacoes: novoFornecedor.observacoes.trim(),
-      };
-      if (modoEdicaoFornecedor && fornecedorSelecionado?.id) {
-        await api.fornecedores.atualizar(fornecedorSelecionado.id, payload);
-        alert("Fornecedor atualizado.");
-      } else {
-        await api.fornecedores.criar(payload);
-        alert("Fornecedor cadastrado.");
-      }
-      const resF = await api.fornecedores.listar();
-      setFornecedores(resF.data || []);
-      limparFornecedor();
-    } catch (err) {
-      console.error("Erro ao salvar fornecedor:", err);
-      alert("Não foi possível salvar o fornecedor.");
-    } finally {
-      setSalvandoFornecedor(false);
-    }
-  }
-
-  async function excluirFornecedor(f) {
-    if (!window.confirm(`Excluir o fornecedor "${f.nome}"?`)) return;
-    try {
-      await api.fornecedores.excluir(f.id);
-      if (fornecedorSelecionado?.id === f.id) limparFornecedor();
-      const res = await api.fornecedores.listar();
-      setFornecedores(res.data || []);
-    } catch (err) {
-      console.error("Erro ao excluir fornecedor:", err);
-      alert("Não foi possível excluir o fornecedor.");
-    }
-  }
 
   return (
     <div className="financeiro-page">
@@ -1034,19 +904,9 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
             Relatórios
           </button>
 
-          <button
-            className={`patients-tab ${abaAtiva === "fornecedores" ? "active" : ""}`}
-            onClick={() => setAbaAtiva("fornecedores")}
-          >
-            🏢 Fornecedores
-          </button>
         </div>
 
-        {carregando ? (
-          <div className="muted-box" style={{ marginTop: "20px" }}>
-            Carregando dados financeiros...
-          </div>
-        ) : (
+        {(
           <>
             {abaAtiva === "resumo" && (
               <div style={{ padding: "28px 0 8px" }}>
@@ -1102,32 +962,63 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
                 )}
 
                 {/* ── KPIs ── */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "18px", marginBottom: "28px" }}>
-                  {[
-                    { title: "Receita Total",  value: kpisDashboard.receita,   color: "#10b981", icon: "↑", sub: "Entradas confirmadas" },
-                    { title: "Despesas",        value: kpisDashboard.despesas,  color: "#f43f5e", icon: "↓", sub: "Saídas pagas" },
-                    { title: "Saldo Atual",     value: kpisDashboard.saldo,     color: kpisDashboard.saldo >= 0 ? "#6366f1" : "#f59e0b", icon: "≡", sub: "Receita − Despesas" },
-                    { title: "Pendências",      value: kpisDashboard.pendentes, color: "#f59e0b", icon: "◷", sub: "Valores a receber" },
-                  ].map(card => (
-                    <div key={card.title} style={{
-                      background: "var(--bg-card)",
-                      borderRadius: "20px",
-                      padding: "24px 24px 20px",
-                      boxShadow: "0 0 0 1px rgba(0,0,0,0.05), 0 2px 4px rgba(0,0,0,0.04), 0 12px 28px rgba(0,0,0,0.05)",
-                    }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "14px" }}>
-                        <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.07em" }}>{card.title}</span>
-                        <div style={{ width: "30px", height: "30px", borderRadius: "9px", background: card.color + "14", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "15px", color: card.color }}>
-                          {card.icon}
-                        </div>
-                      </div>
-                      <div style={{ fontSize: "25px", fontWeight: 800, letterSpacing: "-0.04em", color: "var(--text)", lineHeight: 1, marginBottom: "7px" }}>
-                        {formatarMoeda(card.value)}
-                      </div>
-                      <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{card.sub}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px", marginBottom: "28px" }}>
+                  {/* Receita Clínica */}
+                  <div>
+                    <div style={{ fontSize: "11px", fontWeight: 700, color: "#10b981", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "10px", display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#10b981", display: "inline-block", flexShrink: 0 }} />
+                      Receita Clínica
                     </div>
-                  ))}
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
+                      {[
+                        { title: "Receita Total", value: kpisDashboard.receita, color: "#10b981", icon: "↑", sub: "Entradas confirmadas" },
+                        { title: "Pendências",    value: kpisDashboard.pendentes, color: "#f59e0b", icon: "◷", sub: "Valores a receber" },
+                      ].map(card => (
+                        <div key={card.title} style={{ background: "var(--bg-card)", borderRadius: "20px", padding: "24px 24px 20px", boxShadow: "0 0 0 1px rgba(0,0,0,0.05), 0 2px 4px rgba(0,0,0,0.04), 0 12px 28px rgba(0,0,0,0.05)", borderTop: `3px solid ${card.color}20` }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "14px" }}>
+                            <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.07em" }}>{card.title}</span>
+                            <div style={{ width: "30px", height: "30px", borderRadius: "9px", background: card.color + "14", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "15px", color: card.color }}>
+                              {card.icon}
+                            </div>
+                          </div>
+                          <div style={{ fontSize: "25px", fontWeight: 800, letterSpacing: "-0.04em", color: "var(--text)", lineHeight: 1, marginBottom: "7px" }}>{formatarMoeda(card.value)}</div>
+                          <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{card.sub}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  {/* Despesa Administrativa */}
+                  <div>
+                    <div style={{ fontSize: "11px", fontWeight: 700, color: "#f43f5e", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "10px", display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#f43f5e", display: "inline-block", flexShrink: 0 }} />
+                      Despesa Administrativa
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
+                      {[
+                        { title: "Despesas",   value: kpisDashboard.despesas, color: "#f43f5e", icon: "↓", sub: "Saídas pagas" },
+                        { title: "Saldo Atual", value: kpisDashboard.saldo,   color: kpisDashboard.saldo >= 0 ? "#6366f1" : "#f59e0b", icon: "≡", sub: "Receita − Despesas" },
+                      ].map(card => (
+                        <div key={card.title} style={{ background: "var(--bg-card)", borderRadius: "20px", padding: "24px 24px 20px", boxShadow: "0 0 0 1px rgba(0,0,0,0.05), 0 2px 4px rgba(0,0,0,0.04), 0 12px 28px rgba(0,0,0,0.05)", borderTop: `3px solid ${card.color}20` }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "14px" }}>
+                            <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.07em" }}>{card.title}</span>
+                            <div style={{ width: "30px", height: "30px", borderRadius: "9px", background: card.color + "14", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "15px", color: card.color }}>
+                              {card.icon}
+                            </div>
+                          </div>
+                          <div style={{ fontSize: "25px", fontWeight: 800, letterSpacing: "-0.04em", color: "var(--text)", lineHeight: 1, marginBottom: "7px" }}>{formatarMoeda(card.value)}</div>
+                          <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{card.sub}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
+
+                {/* ── Alertas financeiros ── */}
+                {alertasFinanceiros.length > 0 && (
+                  <div style={{ marginBottom: "20px" }}>
+                    <AlertaBanner alertas={alertasFinanceiros} />
+                  </div>
+                )}
 
                 {/* ── Chart ── */}
                 <div style={{ background: "var(--bg-card)", borderRadius: "20px", padding: "28px 28px 20px", boxShadow: "0 0 0 1px rgba(0,0,0,0.05), 0 2px 4px rgba(0,0,0,0.04), 0 12px 28px rgba(0,0,0,0.05)", marginBottom: "22px" }}>
@@ -1160,24 +1051,31 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
                   ) : chartDados.length > 1 ? (
                     <LineChart dados={chartDados} metrica={chartMetrica} cor={METRICA_COR[chartMetrica]} formatMoeda={formatarMoeda} />
                   ) : (
-                    <div style={{ textAlign: "center", padding: "52px 0", color: "var(--text-muted)", fontSize: "13px" }}>
-                      Sem dados no período selecionado.
-                    </div>
+                    <EmptyState
+                      titulo="Sem movimentações no período"
+                      descricao="Nenhuma receita ou despesa registrada para o intervalo selecionado."
+                      cor="#6366f1"
+                    />
                   )}
                 </div>
 
                 {/* ── Widgets ── */}
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px", marginBottom: "22px" }}>
                   {[
-                    { title: "Receita por Origem", items: receitaPorOrigem.map(r => ({ label: r.origem, valor: r.valor })), total: kpisDashboard.receita, cor: "#10b981" },
-                    { title: "Despesas por Categoria", items: despesaPorCategoria.map(d => ({ label: d.categoria, valor: d.valor })), total: kpisDashboard.despesas, cor: "#f43f5e" },
-                  ].map(widget => (
+                    { title: "Receita por Origem", items: receitaPorOrigem.map(r => ({ label: r.origem, valor: r.valor })), cor: "#10b981" },
+                    { title: "Despesas por Categoria", items: despesaPorCategoria.map(d => ({ label: d.categoria, valor: d.valor })), cor: "#f43f5e" },
+                  ].map(widget => {
+                    // Denominador é a SOMA dos próprios items do widget — garante composição
+                    // somando ~100%. Usar kpisDashboard.* como denominador divergia do numerador
+                    // (filtros diferentes) e gerava percentuais 140%+, 416% etc.
+                    const totalWidget = widget.items.reduce((s, x) => s + Number(x.valor || 0), 0);
+                    return (
                     <div key={widget.title} style={{ background: "var(--bg-card)", borderRadius: "20px", padding: "24px", boxShadow: "0 0 0 1px rgba(0,0,0,0.05), 0 2px 4px rgba(0,0,0,0.04), 0 12px 28px rgba(0,0,0,0.05)" }}>
                       <h4 style={{ margin: "0 0 20px", fontSize: "14px", fontWeight: 700, color: "var(--text)" }}>{widget.title}</h4>
                       {widget.items.length === 0 ? (
                         <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "12px 0" }}>Sem dados no período.</div>
                       ) : widget.items.map(({ label, valor }) => {
-                        const pct = widget.total > 0 ? (valor / widget.total) * 100 : 0;
+                        const pct = totalWidget > 0 ? (valor / totalWidget) * 100 : 0;
                         return (
                           <div key={label} style={{ marginBottom: "16px" }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "7px" }}>
@@ -1194,7 +1092,8 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
                         );
                       })}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 {/* ── Transactions ── */}
@@ -1254,7 +1153,12 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
 
             {abaAtiva === "pagar" && (
               <div style={{ marginTop: "20px" }}>
-                <h3>Contas a Pagar</h3>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px" }}>
+                  <h3 style={{ margin: 0 }}>Contas a Pagar</h3>
+                  <span style={{ fontSize: "11px", fontWeight: 700, color: "#f43f5e", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "20px", padding: "3px 10px", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                    Despesa Administrativa
+                  </span>
+                </div>
 
                 <div className="patients-form-grid" style={{ marginTop: "16px" }}>
                   <div>
@@ -1868,9 +1772,33 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
                   </>
                 )}
 
-                <h3 style={{ marginTop: "24px" }}>Filtros</h3>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "24px", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
+                  <h3 style={{ margin: 0 }}>Filtros</h3>
+                  <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                    {(filtros.fornecedor || filtros.status || filtros.vencimento || filtros.periodoInicio || filtros.periodoFim || filtros.nf) && (
+                      <button
+                        className="secondary-btn"
+                        style={{ fontSize: "12px", padding: "5px 12px" }}
+                        onClick={() => setFiltros({ fornecedor: "", status: "", vencimento: "", periodoInicio: "", periodoFim: "", nf: "", paciente: "", formaPagamento: "", categoria: "" })}
+                      >
+                        ✕ Limpar filtros
+                      </button>
+                    )}
+                    <button
+                      className="secondary-btn"
+                      style={{ fontSize: "12px", padding: "5px 12px" }}
+                      disabled={carregandoContas}
+                      onClick={carregarContasPagar}
+                    >
+                      {carregandoContas ? "Carregando…" : "↻ Atualizar"}
+                    </button>
+                    <span style={{ fontSize: "12px", color: "#64748b" }}>
+                      {contasPagarFiltradas.length} conta{contasPagarFiltradas.length !== 1 ? "s" : ""}
+                    </span>
+                  </div>
+                </div>
 
-                <div className="patients-form-grid" style={{ marginTop: "16px" }}>
+                <div className="patients-form-grid" style={{ marginTop: "0" }}>
                   <input
                     className="input"
                     placeholder="Filtrar por fornecedor"
@@ -1897,6 +1825,7 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
                   <input
                     className="input"
                     type="date"
+                    title="Vencimento exato"
                     value={filtros.vencimento}
                     onChange={(e) =>
                       setFiltros({ ...filtros, vencimento: e.target.value })
@@ -1906,6 +1835,7 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
                   <input
                     className="input"
                     type="date"
+                    title="Vencimento a partir de"
                     value={filtros.periodoInicio}
                     onChange={(e) =>
                       setFiltros({ ...filtros, periodoInicio: e.target.value })
@@ -1915,6 +1845,7 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
                   <input
                     className="input"
                     type="date"
+                    title="Vencimento até"
                     value={filtros.periodoFim}
                     onChange={(e) =>
                       setFiltros({ ...filtros, periodoFim: e.target.value })
@@ -1931,6 +1862,13 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
                   />
                 </div>
 
+                {carregandoContas && (
+                  <div style={{ textAlign: "center", padding: "32px", color: "#94a3b8", fontSize: "13px" }}>
+                    Carregando contas a pagar...
+                  </div>
+                )}
+
+                {!carregandoContas && (
                 <div className="table-wrapper" style={{ marginTop: "20px" }}>
                   <table className="table">
                     <thead>
@@ -1948,7 +1886,7 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
                     </thead>
 
                     <tbody>
-                      {contasPagarFiltradas.map((item) => (
+                      {contasPagarPagina.map((item) => (
                         <tr key={item.id}>
                           <td>{item.fornecedor || "—"}</td>
                           <td>{item.cnpjFornecedor || "—"}</td>
@@ -1995,18 +1933,62 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
 
                       {contasPagarFiltradas.length === 0 && (
                         <tr>
-                          <td colSpan="9">Nenhuma conta a pagar encontrada.</td>
+                          <td colSpan="9" style={{ textAlign: "center", padding: "36px 20px" }}>
+                            <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 6 }}>
+                              Nenhuma conta a pagar encontrada.
+                            </div>
+                            <div style={{ fontSize: 12, color: "#cbd5e1" }}>
+                              Use o formulário ao lado para cadastrar despesas administrativas.
+                            </div>
+                          </td>
                         </tr>
                       )}
                     </tbody>
                   </table>
                 </div>
+                )}
+
+                {!carregandoContas && totalPaginasContas > 1 && (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "14px", flexWrap: "wrap", gap: "8px" }}>
+                    <div style={{ display: "flex", gap: "6px" }}>
+                      <button
+                        className="secondary-btn"
+                        style={{ fontSize: "12px", padding: "5px 12px" }}
+                        disabled={paginaContas === 1}
+                        onClick={() => setPaginaContas((p) => Math.max(1, p - 1))}
+                      >
+                        ‹ Anterior
+                      </button>
+                      <button
+                        className="secondary-btn"
+                        style={{ fontSize: "12px", padding: "5px 12px" }}
+                        disabled={paginaContas >= totalPaginasContas}
+                        onClick={() => setPaginaContas((p) => Math.min(totalPaginasContas, p + 1))}
+                      >
+                        Próxima ›
+                      </button>
+                    </div>
+                    <span style={{ fontSize: "12px", color: "#64748b" }}>
+                      Página {paginaContas} de {totalPaginasContas} — exibindo {contasPagarPagina.length} de {contasPagarFiltradas.length} contas
+                    </span>
+                  </div>
+                )}
               </div>
             )}
 
             {abaAtiva === "receber" && (
               <div style={{ marginTop: "20px" }}>
-                <h3>Contas a Receber</h3>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px", flexWrap: "wrap" }}>
+                  <h3 style={{ margin: 0 }}>Contas a Receber</h3>
+                  <span style={{ fontSize: "11px", fontWeight: 700, color: "#10b981", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "20px", padding: "3px 10px", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                    Receita Clínica
+                  </span>
+                  {onIrParaPagamentos && (
+                    <button onClick={onIrParaPagamentos} style={{ marginLeft: "auto", padding: "6px 14px", borderRadius: 20, fontSize: 12, fontWeight: 700, border: "1.5px solid rgba(15,118,110,.5)", background: "rgba(15,118,110,.08)", color: "#0f766e", cursor: "pointer" }}>
+                      Registrar recebimento →
+                    </button>
+                  )}
+                </div>
 
                 <div className="table-wrapper">
                   <table className="table">
@@ -2015,12 +1997,10 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
                         <th>Paciente/Convênio</th>
                         <th>Serviço</th>
                         <th>Valor</th>
-                        <th>Vencimento</th>
-                        <th>Data pagamento</th>
+                        <th>Data</th>
                         <th>Status</th>
-                        <th>Forma</th>
+                        <th>Origem</th>
                         <th>Observações</th>
-                        <th>Ações</th>
                       </tr>
                     </thead>
 
@@ -2030,34 +2010,27 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
                           <td>{item.paciente || "—"}</td>
                           <td>{item.tipoAtendimento || item.descricao || item.servico || "—"}</td>
                           <td>{formatarMoeda(item.valor)}</td>
-                          <td>{item.dataVencimento || item.dataPagamento || "—"}</td>
-                          <td>{item.dataPagamento || "—"}</td>
-                          <td>{item.statusPagamento || "Pendente"}</td>
-                          <td>{item.formaPagamento || "—"}</td>
-                          <td>{item.observacoes || "—"}</td>
+                          <td>{item.dataPagamento || item.data || "—"}</td>
                           <td>
-                            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                              <button
-                                className="secondary-btn"
-                                onClick={() => marcarComoPago(item.id)}
-                              >
-                                Marcar como pago
-                              </button>
-
-                              <button
-                                className="danger-btn"
-                                onClick={() => cancelarPagamento(item.id)}
-                              >
-                                Cancelar
-                              </button>
-                            </div>
+                            <span style={{ padding: "2px 8px", borderRadius: 12, fontSize: 11, fontWeight: 700, background: "#fef3c7", color: "#92400e" }}>
+                              Pendente
+                            </span>
                           </td>
+                          <td style={{ fontSize: 12, color: "#64748b" }}>{item.origem || "—"}</td>
+                          <td>{item.observacoes || "—"}</td>
                         </tr>
                       ))}
 
                       {contasAReceber.length === 0 && (
                         <tr>
-                          <td colSpan="9">Nenhuma conta pendente encontrada.</td>
+                          <td colSpan="7" style={{ textAlign: "center", padding: "36px 20px" }}>
+                            <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 6 }}>
+                              Nenhuma conta a receber pendente.
+                            </div>
+                            <div style={{ fontSize: 12, color: "#cbd5e1" }}>
+                              Pagamentos pendentes aparecem aqui. Para registrar recebimento, use o módulo Pagamentos.
+                            </div>
+                          </td>
                         </tr>
                       )}
                     </tbody>
@@ -2089,9 +2062,9 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
                           <td>{item.paciente || "—"}</td>
                           <td>{item.tipoAtendimento || item.descricao || item.servico || "—"}</td>
                           <td>{formatarMoeda(item.valor)}</td>
-                          <td>{item.formaPagamento || "—"}</td>
+                          <td>{normalizarFormaPagamento(item.formaPagamento) || "—"}</td>
                           <td>{item.dataPagamento || "—"}</td>
-                          <td>{item.origem || "Recepção"}</td>
+                          <td>{normalizarOrigem(item.origem)}</td>
                         </tr>
                       ))}
 
@@ -2152,7 +2125,7 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
                         <tr key={item.id}>
                           <td>{item.data || "—"}</td>
                           <td>{item.tipo}</td>
-                          <td>{item.origem}</td>
+                          <td>{normalizarOrigem(item.origem)}</td>
                           <td>{item.pessoa}</td>
                           <td>{item.descricao}</td>
                           <td>{item.forma}</td>
@@ -2164,7 +2137,14 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
 
                       {movimentacoes.length === 0 && (
                         <tr>
-                          <td colSpan="9">Nenhuma movimentação encontrada.</td>
+                          <td colSpan="9" style={{ textAlign: "center", padding: "36px 20px" }}>
+                            <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 6 }}>
+                              Nenhuma movimentação no período selecionado.
+                            </div>
+                            <div style={{ fontSize: 12, color: "#cbd5e1" }}>
+                              Tente ampliar o intervalo de datas ou verificar o filtro de tipo.
+                            </div>
+                          </td>
                         </tr>
                       )}
                     </tbody>
@@ -2247,58 +2227,6 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
                   />
                 </div>
 
-                <div className="stats-grid" style={{ marginTop: "16px" }}>
-                  <div className="stat-box">
-                    <div className="stat-label">Contas a pagar</div>
-                    <div className="stat-value">{contasPagar.length}</div>
-                    <div className="stat-info">Total cadastrado</div>
-                  </div>
-
-                  <div className="stat-box">
-                    <div className="stat-label">Contas pagas</div>
-                    <div className="stat-value">
-                      {
-                        contasPagar.filter((item) => item.status === "Pago").length
-                      }
-                    </div>
-                    <div className="stat-info">Saídas pagas</div>
-                  </div>
-
-                  <div className="stat-box">
-                    <div className="stat-label">Contas vencidas</div>
-                    <div className="stat-value">
-                      {dadosFinanceiros.contasVencidas}
-                    </div>
-                    <div className="stat-info">Pendências vencidas</div>
-                  </div>
-
-                  <div className="stat-box">
-                    <div className="stat-label">Fluxo de caixa</div>
-                    <div className="stat-value">
-                      {formatarMoeda(
-                        dadosFinanceiros.receitaMes - dadosFinanceiros.despesasMes
-                      )}
-                    </div>
-                    <div className="stat-info">Receita - despesa</div>
-                  </div>
-
-                  <div className="stat-box">
-                    <div className="stat-label">Receita mensal</div>
-                    <div className="stat-value">
-                      {formatarMoeda(dadosFinanceiros.receitaMes)}
-                    </div>
-                    <div className="stat-info">Entradas do mês</div>
-                  </div>
-
-                  <div className="stat-box">
-                    <div className="stat-label">Despesa mensal</div>
-                    <div className="stat-value">
-                      {formatarMoeda(dadosFinanceiros.despesasMes)}
-                    </div>
-                    <div className="stat-info">Saídas do mês</div>
-                  </div>
-                </div>
-
                 <h3 style={{ marginTop: "24px" }}>
                   Recebimentos por forma de pagamento
                 </h3>
@@ -2327,220 +2255,6 @@ export default function Financeiro({ pagamentos = [], onIrParaRelatorios, onIrPa
                       )}
                     </tbody>
                   </table>
-                </div>
-              </div>
-            )}
-            {abaAtiva === "fornecedores" && (
-              <div style={{ marginTop: "20px" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
-                  <div>
-                    <h3 style={{ margin: 0 }}>
-                      {modoEdicaoFornecedor ? "Editar Fornecedor" : "Cadastrar Fornecedor"}
-                    </h3>
-                    <p className="page-subtitle" style={{ margin: "4px 0 0" }}>
-                      Gerencie os fornecedores vinculados às contas a pagar.
-                    </p>
-                  </div>
-                  {modoEdicaoFornecedor && (
-                    <button className="secondary-btn" onClick={limparFornecedor}>
-                      Cancelar edição
-                    </button>
-                  )}
-                </div>
-
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
-                  <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "14px", padding: "20px" }}>
-                    <h4 style={{ margin: "0 0 16px", fontSize: "14px", fontWeight: 700 }}>
-                      {modoEdicaoFornecedor ? `Editando: ${fornecedorSelecionado?.nome}` : "Novo fornecedor"}
-                    </h4>
-
-                    <div className="patients-form-grid">
-                      <div className="patients-full-width">
-                        <label>Nome do fornecedor *</label>
-                        <input
-                          className="input"
-                          value={novoFornecedor.nome}
-                          onChange={(e) => setNovoFornecedor((p) => ({ ...p, nome: e.target.value }))}
-                          placeholder="Razão social ou nome fantasia"
-                        />
-                      </div>
-
-                      <div>
-                        <label>CNPJ</label>
-                        <input
-                          className="input"
-                          value={novoFornecedor.cnpj}
-                          onChange={(e) => setNovoFornecedor((p) => ({ ...p, cnpj: e.target.value }))}
-                          placeholder="00.000.000/0000-00"
-                        />
-                      </div>
-
-                      <div>
-                        <label>Categoria</label>
-                        <select
-                          className="select"
-                          value={novoFornecedor.categoria}
-                          onChange={(e) => setNovoFornecedor((p) => ({ ...p, categoria: e.target.value }))}
-                        >
-                          <option value="">Selecionar categoria</option>
-                          <option value="Material médico">Material médico</option>
-                          <option value="Material odontológico">Material odontológico</option>
-                          <option value="Equipamentos">Equipamentos</option>
-                          <option value="Serviços">Serviços</option>
-                          <option value="Manutenção">Manutenção</option>
-                          <option value="Limpeza">Limpeza</option>
-                          <option value="Aluguel">Aluguel</option>
-                          <option value="Tecnologia">Tecnologia</option>
-                          <option value="Outros">Outros</option>
-                        </select>
-                      </div>
-
-                      <div>
-                        <label>Telefone / WhatsApp</label>
-                        <input
-                          className="input"
-                          value={novoFornecedor.telefone}
-                          onChange={(e) => setNovoFornecedor((p) => ({ ...p, telefone: e.target.value }))}
-                          placeholder="(00) 00000-0000"
-                        />
-                      </div>
-
-                      <div>
-                        <label>E-mail</label>
-                        <input
-                          className="input"
-                          type="email"
-                          value={novoFornecedor.email}
-                          onChange={(e) => setNovoFornecedor((p) => ({ ...p, email: e.target.value }))}
-                          placeholder="contato@fornecedor.com.br"
-                        />
-                      </div>
-
-                      <div>
-                        <label>Nome do contato</label>
-                        <input
-                          className="input"
-                          value={novoFornecedor.contato}
-                          onChange={(e) => setNovoFornecedor((p) => ({ ...p, contato: e.target.value }))}
-                          placeholder="Responsável pelo atendimento"
-                        />
-                      </div>
-
-                      <div className="patients-full-width">
-                        <label>Endereço</label>
-                        <input
-                          className="input"
-                          value={novoFornecedor.endereco}
-                          onChange={(e) => setNovoFornecedor((p) => ({ ...p, endereco: e.target.value }))}
-                          placeholder="Rua, número, cidade"
-                        />
-                      </div>
-
-                      <div className="patients-full-width">
-                        <label>Observações</label>
-                        <textarea
-                          className="textarea"
-                          value={novoFornecedor.observacoes}
-                          onChange={(e) => setNovoFornecedor((p) => ({ ...p, observacoes: e.target.value }))}
-                          placeholder="Prazo de pagamento, condições especiais..."
-                          rows={3}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="patients-form-actions" style={{ marginTop: "16px" }}>
-                      <button
-                        className="primary-btn"
-                        onClick={salvarFornecedor}
-                        disabled={salvandoFornecedor}
-                      >
-                        {salvandoFornecedor
-                          ? "Salvando..."
-                          : modoEdicaoFornecedor
-                          ? "Atualizar fornecedor"
-                          : "Cadastrar fornecedor"}
-                      </button>
-                      <button className="secondary-btn" onClick={limparFornecedor}>
-                        Limpar
-                      </button>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
-                      <h4 style={{ margin: 0, fontSize: "14px", fontWeight: 700 }}>
-                        Fornecedores cadastrados ({fornecedores.length})
-                      </h4>
-                    </div>
-
-                    <div style={{ display: "grid", gap: "10px", maxHeight: "540px", overflowY: "auto", paddingRight: "4px" }}>
-                      {fornecedores.length === 0 && (
-                        <div className="muted-box">Nenhum fornecedor cadastrado.</div>
-                      )}
-                      {fornecedores.map((f) => (
-                        <div
-                          key={f.id}
-                          style={{
-                            background: fornecedorSelecionado?.id === f.id ? "rgba(99,102,241,0.07)" : "var(--bg-card)",
-                            border: `1px solid ${fornecedorSelecionado?.id === f.id ? "rgba(99,102,241,0.35)" : "var(--border)"}`,
-                            borderRadius: "12px",
-                            padding: "14px 16px",
-                          }}
-                        >
-                          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "8px" }}>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontWeight: 700, fontSize: "14px", marginBottom: "4px" }}>{f.nome}</div>
-                              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "6px" }}>
-                                {f.categoria && (
-                                  <span className="patients-badge patients-badge-blue" style={{ fontSize: "11px" }}>
-                                    {f.categoria}
-                                  </span>
-                                )}
-                                {f.cnpj && (
-                                  <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                                    CNPJ: {f.cnpj}
-                                  </span>
-                                )}
-                              </div>
-                              {(f.telefone || f.email) && (
-                                <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                                  {f.telefone && <span>📞 {f.telefone}</span>}
-                                  {f.telefone && f.email && <span style={{ margin: "0 6px" }}>•</span>}
-                                  {f.email && <span>✉️ {f.email}</span>}
-                                </div>
-                              )}
-                              {f.contato && (
-                                <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "2px" }}>
-                                  Contato: {f.contato}
-                                </div>
-                              )}
-                            </div>
-                            <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
-                              <button
-                                className="secondary-btn"
-                                style={{ padding: "4px 10px", fontSize: "12px" }}
-                                onClick={() => editarFornecedor(f)}
-                              >
-                                Editar
-                              </button>
-                              <button
-                                className="secondary-btn"
-                                style={{ padding: "4px 10px", fontSize: "12px", color: "#dc2626", borderColor: "#fca5a5" }}
-                                onClick={() => excluirFornecedor(f)}
-                              >
-                                Excluir
-                              </button>
-                            </div>
-                          </div>
-                          {f.observacoes && (
-                            <div style={{ marginTop: "8px", fontSize: "12px", color: "var(--text-muted)", background: "var(--bg-muted)", borderRadius: "8px", padding: "6px 10px" }}>
-                              {f.observacoes}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
                 </div>
               </div>
             )}

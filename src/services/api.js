@@ -1,11 +1,28 @@
 /**
- * NexusCare — Camada de serviço para o backend PHP
+ * Vynor Clinic — Camada de serviço para o backend PHP
  * Centraliza todas as chamadas HTTP para a API MySQL.
  */
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost/nexuscare-api/api';
-const TOKEN_KEY = 'nexuscare_token';
+const isPublicTunnel = window.location.hostname.endsWith('.trycloudflare.com');
+const API_BASE = isPublicTunnel
+  ? `${window.location.origin}/vynor-clinic-api/api`
+  : (import.meta.env.VITE_API_URL || `${window.location.origin}/vynor-clinic-api/api`);
+const TOKEN_KEY = 'vynorclinic_token';
 
+// SECURITY NOTE — JWT storage
+//
+// Status atual (pós-migração):
+// - Token armazenado em localStorage (fallback / desenvolvimento).
+// - Cookie httpOnly `vynorclinic_token` emitido pelo backend no login/refresh/logout.
+// - AuthMiddleware lê o cookie primeiro; header Authorization é fallback.
+// - Todas as chamadas fetch usam credentials: 'include'.
+// - SameSite=Strict protege contra CSRF em navegadores modernos.
+// - Secure só é definido quando HTTPS ou X-Forwarded-Proto=https está presente.
+//
+// Para remover o localStorage completamente (passo seguinte):
+// - Confirmar que o cookie chega corretamente no ambiente de produção (HTTPS).
+// - Remover tokenStorage.set() do login/refresh e tokenStorage.get() do request().
+// - Remover o header Authorization das requisições (AuthMiddleware já aceita só cookie).
 export const tokenStorage = {
   get:    ()      => localStorage.getItem(TOKEN_KEY),
   set:    (token) => localStorage.setItem(TOKEN_KEY, token),
@@ -18,7 +35,6 @@ export function normalizePaciente(p) {
   if (!p) return null;
   return {
     id:                  p.id,
-    firebase_id:         p.firebase_id || '',
     nome:                p.nome || '',
     cpf:                 p.cpf || '',
     rg:                  p.rg || '',
@@ -41,6 +57,8 @@ export function normalizePaciente(p) {
     tipoSanguineo:       p.tipo_sanguineo || p.tipoSanguineo || '',
     alergias:            p.alergias || '',
     observacoes:         p.observacoes || '',
+    mae:                 p.nome_mae || p.mae || '',
+    pai:                 p.nome_pai || p.pai || '',
     ativo:               p.ativo ?? 1,
     status:              (p.ativo ?? 1) ? 'Ativo' : 'Inativo',
     createdAt:           p.created_at ? { seconds: Math.floor(new Date(p.created_at).getTime() / 1000) } : null,
@@ -50,20 +68,19 @@ export function normalizePaciente(p) {
 
 export function normalizePagamento(p) {
   if (!p) return null;
-  // atendimentoId: usa atendimento_id (MySQL) ou atendimento_odonto_id (Firebase ref transitional)
   const atendimentoId = p.atendimento_id
     ? String(p.atendimento_id)
     : (p.atendimento_odonto_id || p.atendimentoId || '');
 
   return {
     id:                    p.id,
-    firebase_id:           p.firebase_id || '',
     pacienteId:            p.paciente_id || p.pacienteId || '',
     nomePaciente:          p.nome_paciente || p.nomePaciente || p.paciente || '',
     paciente:              p.nome_paciente || p.nomePaciente || p.paciente || '',
     atendimentoId,
     atendimento_id:        p.atendimento_id || null,
-    atendimento_odonto_id: p.atendimento_odonto_id || '',
+    atendimento_odonto_id:  p.atendimento_odonto_id || '',
+    agendamento_odonto_id:  p.agendamento_odonto_id || null,
     descricao:             p.descricao || '',
     tipoAtendimento:       p.descricao || p.tipoAtendimento || '',
     servico:               p.servico || '',
@@ -92,7 +109,6 @@ export function normalizeAgendamentoOdonto(a) {
   }
   return {
     id:                      a.id,
-    firebase_id:             a.firebase_id || '',
     pacienteId:              a.paciente_id || '',
     pacienteNome:            a.paciente_nome || '',
     profissionalId:          a.profissional_id || '',
@@ -122,7 +138,6 @@ export function normalizeAtendimentoOdonto(a) {
   };
   return {
     id:                       a.id,
-    firebase_id:              a.firebase_id || '',
     agendamentoId:            a.agendamento_id || null,
     pacienteId:               a.paciente_id || '',
     pacienteNome:             a.paciente_nome || '',
@@ -161,7 +176,6 @@ export function normalizeUsuario(u) {
   if (!Array.isArray(permissions)) permissions = [];
   return {
     id:                 u.id,
-    firebase_uid:       u.firebase_uid || '',
     // login — alias triplo para retrocompatibilidade
     login:              u.login || '',
     username:           u.login || '',
@@ -173,6 +187,7 @@ export function normalizeUsuario(u) {
     perfil_base:        u.perfil_base || u.role || 'recepcao',
     permissions,
     crm:                u.crm || '',
+    cro:                u.cro || '',
     coren:              u.coren || '',
     especialidade:      u.especialidade || '',
     especialidades:     parseArr(u.especialidades),
@@ -205,21 +220,20 @@ export function normalizeAtendimento(a) {
   };
   return {
     id:                       a.id,
-    firebase_id:              a.firebase_id || '',
     paciente:                 a.nome_paciente || a.paciente || '',
     nomePaciente:             a.nome_paciente || a.nomePaciente || '',
     pacienteId:               a.paciente_id || '',
     medico:                   a.nome_medico || a.medico || '',
     nomeMedico:               a.nome_medico || a.nomeMedico || '',
     usuarioId:                a.usuario_id || null,
-    profissionalId:           a.profissional_firebase_id || a.profissionalId || '',
-    profissionalFirebaseId:   a.profissional_firebase_id || '',
+    profissionalId:           a.profissional_id || a.profissionalId || '',
     consultorioId:            a.consultorio_id || '',
     data:                     a.data || '',
     hora:                     a.hora || '',
     tipoAtendimento:          a.tipo_atendimento || a.tipoAtendimento || '',
     especialidade:            a.especialidade || '',
     status:                   a.status || 'agendado',
+    valorConsulta:            a.valor_consulta != null ? Number(a.valor_consulta) : (a.valorConsulta != null ? Number(a.valorConsulta) : 0),
     observacoes:              a.observacoes || '',
     prontuario:               parseJson(a.prontuario),
     anamnese:                 parseJson(a.anamnese),
@@ -231,7 +245,9 @@ export function normalizeAtendimento(a) {
     temp:                     a.temp != null ? Number(a.temp) : '',
     saturacao:                a.saturacao != null ? Number(a.saturacao) : '',
     pagamentoId:              a.pagamento_id ? String(a.pagamento_id) : '',
+    statusPagamento:          a.status_pagamento || null,
     finalizadoEm:             a.finalizado_em || null,
+    antecipado_em:            a.antecipado_em || null,
     createdAt:                a.created_at ? { seconds: Math.floor(new Date(a.created_at).getTime() / 1000) } : null,
   };
 }
@@ -245,7 +261,6 @@ export function normalizeContaPagar(c) {
   };
   return {
     id:                    c.id,
-    firebase_id:           c.firebase_id || '',
     fornecedor:            c.fornecedor || '',
     cnpjFornecedor:        c.cnpj_fornecedor || '',
     dataEmissao:           c.data_emissao || '',
@@ -280,7 +295,6 @@ export function normalizeFornecedor(f) {
   if (!f) return null;
   return {
     id:          f.id,
-    firebase_id: f.firebase_id || '',
     nome:        f.nome || '',
     cnpj:        f.cnpj || '',
     telefone:    f.telefone || '',
@@ -290,6 +304,30 @@ export function normalizeFornecedor(f) {
     endereco:    f.endereco || '',
     observacoes: f.observacoes || '',
     ativo:       f.ativo ?? 1,
+  };
+}
+
+export function normalizeEstoque(e) {
+  if (!e) return null;
+  return {
+    id:               e.id,
+    nome:             e.nome || '',
+    categoria:        e.categoria || '',
+    unidade:          e.unidade || '',
+    quantidade:       Number(e.quantidade ?? 0),
+    quantidadeMinima: Number(e.quantidade_minima ?? 0),
+    quantidade_minima: Number(e.quantidade_minima ?? 0),
+    precoUnitario:    Number(e.preco_unitario ?? 0),
+    preco_unitario:   Number(e.preco_unitario ?? 0),
+    fornecedor:       e.fornecedor || '',
+    localizacao:      e.localizacao || '',
+    observacoes:      e.observacoes || '',
+    codigoInterno:    e.codigo_interno || '',
+    codigo_interno:   e.codigo_interno || '',
+    validade:         e.validade || '',
+    ativo:            e.ativo ?? 1,
+    criadoEm:         e.created_at || '',
+    atualizadoEm:     e.updated_at || '',
   };
 }
 
@@ -307,66 +345,142 @@ export function normalizeProcedimentoOdonto(p) {
 
 // ── Cliente HTTP base ──────────────────────────────────────────────────────
 
-async function request(method, path, body = null, options = {}) {
-  const token = tokenStorage.get();
+// Refresh mutex — evita múltiplos refreshes paralelos em caso de 401 simultâneo
+let _refreshing    = false;
+let _refreshQueue  = [];
 
-  const headers = {
-    'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...options.headers,
-  };
-
-  const config = { method: method.toUpperCase(), headers };
-
-  if (body !== null && !['GET', 'HEAD'].includes(config.method)) {
-    config.body = JSON.stringify(body);
-  }
-
-  try {
-    const response = await fetch(`${API_BASE}${path}`, config);
-
-    if (response.status === 401) {
-      tokenStorage.remove();
-      window.dispatchEvent(new CustomEvent('nexuscare:unauthorized'));
-    }
-
-    const text = await response.text();
-    const data = text ? JSON.parse(text) : null;
-
-    if (!response.ok) {
-      const error = new Error(data?.message || `Erro HTTP ${response.status}`);
-      error.status = response.status;
-      error.data   = data;
-      throw error;
-    }
-
-    return data;
-  } catch (err) {
-    if (err.status) throw err;
-    const netError = new Error('Não foi possível conectar ao servidor.');
-    netError.isNetworkError = true;
-    throw netError;
-  }
+function _drainQueue(newToken) {
+  _refreshQueue.forEach(cb => cb(newToken));
+  _refreshQueue = [];
 }
 
-// ── Upload multipart (para anexos) ────────────────────────────────────────
+function _failQueue(err) {
+  _refreshQueue.forEach(cb => cb(null, err));
+  _refreshQueue = [];
+}
 
-export async function uploadAnexo(formData) {
-  const token = tokenStorage.get();
-  const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  const response = await fetch(`${API_BASE}/anexos-financeiros`, {
+async function _doRefresh() {
+  const res = await fetch(`${API_BASE}/auth/refresh`, {
     method: 'POST',
-    headers,
-    body: formData,
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(tokenStorage.get() ? { Authorization: `Bearer ${tokenStorage.get()}` } : {}),
+    },
+    body: JSON.stringify({}),
   });
-  const text = await response.text();
+  const text = await res.text();
   const data = text ? JSON.parse(text) : null;
-  if (!response.ok) {
-    const error = new Error(data?.message || `Erro HTTP ${response.status}`);
-    error.status = response.status;
-    throw error;
+  if (!res.ok) throw new Error(data?.message || 'Refresh falhou');
+  const newToken = data?.data?.token;
+  if (newToken) tokenStorage.set(newToken);
+  return newToken || tokenStorage.get();
+}
+
+// ── Helpers de parse + retry unificados ──────────────────────────────────
+
+async function _parseResponse(res) {
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!res.ok) {
+    const e = new Error(data?.message || `Erro HTTP ${res.status}`);
+    e.status = res.status;
+    e.data   = data;
+    throw e;
   }
   return data;
+}
+
+/**
+ * Executa `makeFetch(token)` e, se receber 401, tenta refresh uma vez.
+ * `makeFetch` recebe o token atual e retorna uma Promise<Response>.
+ * Todas as chamadas (JSON e multipart) reutilizam este helper.
+ */
+async function _withRefreshRetry(makeFetch) {
+  let response;
+  try {
+    response = await makeFetch(tokenStorage.get());
+  } catch {
+    const e = new Error('Não foi possível conectar ao servidor.');
+    e.isNetworkError = true;
+    throw e;
+  }
+
+  if (response.status !== 401) {
+    return _parseResponse(response);
+  }
+
+  // ── 401 path: enfileira se já está renovando ──────────────────────────
+  if (_refreshing) {
+    return new Promise((resolve, reject) => {
+      _refreshQueue.push(async (newToken, err) => {
+        if (err) { reject(err); return; }
+        try {
+          const retryResp = await makeFetch(newToken);
+          resolve(await _parseResponse(retryResp));
+        } catch (e) { reject(e); }
+      });
+    });
+  }
+
+  // ── Tenta refresh ─────────────────────────────────────────────────────
+  _refreshing = true;
+  let newToken = null;
+  try {
+    newToken = await _doRefresh();
+    _drainQueue(newToken);
+  } catch (refreshErr) {
+    _failQueue(refreshErr);
+    tokenStorage.remove();
+    window.dispatchEvent(new CustomEvent('vynorclinic:unauthorized'));
+    _refreshing = false;
+    const e = new Error('Sessão expirada. Faça login novamente.');
+    e.status = 401;
+    throw e;
+  }
+  _refreshing = false;
+
+  // ── Retry com novo token ──────────────────────────────────────────────
+  let retryResponse;
+  try {
+    retryResponse = await makeFetch(newToken);
+  } catch {
+    const e = new Error('Não foi possível conectar ao servidor.');
+    e.isNetworkError = true;
+    throw e;
+  }
+  return _parseResponse(retryResponse);
+}
+
+async function request(method, path, body = null, options = {}) {
+  return _withRefreshRetry((token) => {
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options.headers,
+    };
+    const config = { method: method.toUpperCase(), headers, credentials: 'include' };
+    if (body !== null && !['GET', 'HEAD'].includes(config.method)) {
+      config.body = JSON.stringify(body);
+    }
+    return fetch(`${API_BASE}${path}`, config);
+  });
+}
+
+// ── Upload multipart ──────────────────────────────────────────────────────
+
+async function uploadMultipart(path, formData) {
+  return _withRefreshRetry((token) => {
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    return fetch(`${API_BASE}${path}`, { method: 'POST', headers, body: formData, credentials: 'include' });
+  });
+}
+
+export async function uploadAnexo(formData) {
+  return _withRefreshRetry((token) => {
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    return fetch(`${API_BASE}/anexos-financeiros`, { method: 'POST', headers, body: formData, credentials: 'include' });
+  });
 }
 
 // ── API pública ────────────────────────────────────────────────────────────
@@ -391,31 +505,28 @@ const api = {
     },
     me: () => api.get('/me').then(r => ({ ...r, data: normalizeUsuario(r?.data) })),
 
-    /** Sincroniza usuário Firebase → MySQL (mantido para legado). */
-    syncFirebase: async ({ uid, email, nome, displayName, role }) => {
-      const res = await api.post('/auth/firebase-sync', {
-        uid, email, nome: nome || displayName || '', role: role || 'recepcao',
-      });
+    lookupEmail: (login) => api.get('/auth/lookup-email', { login }),
+    refresh: async () => {
+      const res = await api.post('/auth/refresh', {});
       if (res?.data?.token) tokenStorage.set(res.data.token);
       return res;
     },
-
-    lookupEmail: (login) => api.get('/auth/lookup-email', { login }),
   },
 
   // ── Pacientes ─────────────────────────────────────────────────────────
   pacientes: {
-    listar:    (params)       => api.get('/pacientes', params)
-                                    .then(r => ({ ...r, data: (r?.data || []).map(normalizePaciente) })),
-    buscar:    (q)            => api.get('/pacientes', { q })
-                                    .then(r => ({ ...r, data: (r?.data || []).map(normalizePaciente) })),
-    obter:     (id)           => api.get(`/pacientes/${id}`)
-                                    .then(r => ({ ...r, data: normalizePaciente(r?.data) })),
-    criar:     (dados)        => api.post('/pacientes', dados)
-                                    .then(r => ({ ...r, data: normalizePaciente(r?.data) })),
-    atualizar: (id, dados)    => api.put(`/pacientes/${id}`, dados)
-                                    .then(r => ({ ...r, data: normalizePaciente(r?.data) })),
-    excluir:   (id)           => api.delete(`/pacientes/${id}`),
+    listar:             (params)    => api.get('/pacientes', params)
+                                          .then(r => ({ ...r, data: (r?.data || []).map(normalizePaciente) })),
+    buscar:             (q)         => api.get('/pacientes', { q })
+                                          .then(r => ({ ...r, data: (r?.data || []).map(normalizePaciente) })),
+    obter:              (id)        => api.get(`/pacientes/${id}`)
+                                          .then(r => ({ ...r, data: normalizePaciente(r?.data) })),
+    criar:              (dados)     => api.post('/pacientes', dados)
+                                          .then(r => ({ ...r, data: normalizePaciente(r?.data) })),
+    atualizar:          (id, dados) => api.put(`/pacientes/${id}`, dados)
+                                          .then(r => ({ ...r, data: normalizePaciente(r?.data) })),
+    excluir:            (id)        => api.delete(`/pacientes/${id}`),
+    verificarDuplicata: (cpf)       => api.get('/pacientes/verificar-duplicata', { cpf }),
   },
 
   // ── Atendimentos (médico) ─────────────────────────────────────────────
@@ -429,6 +540,9 @@ const api = {
                                     .then(r => ({ ...r, data: normalizeAtendimento(r?.data) })),
     atualizar: (id, dados)    => api.put(`/atendimentos/${id}`, dados)
                                     .then(r => ({ ...r, data: normalizeAtendimento(r?.data) })),
+    // Enfermagem registra sinais vitais (F6).
+    triagem:   (id, dados)    => api.put(`/atendimentos/${id}/triagem`, dados)
+                                    .then(r => ({ ...r, data: normalizeAtendimento(r?.data) })),
   },
 
   // ── Agendamentos Odonto ───────────────────────────────────────────────
@@ -441,6 +555,16 @@ const api = {
                                     .then(r => ({ ...r, data: normalizeAgendamentoOdonto(r?.data) })),
     atualizar: (id, dados)    => api.put(`/agendamentos-odonto/${id}`, dados)
                                     .then(r => ({ ...r, data: normalizeAgendamentoOdonto(r?.data) })),
+    confirmarChegada: (id, dados = {}) => api.post(`/agendamentos-odonto/${id}/confirmar-chegada`, dados)
+                                    .then(r => ({
+                                      ...r,
+                                      data: {
+                                        ...r?.data,
+                                        agendamento: normalizeAgendamentoOdonto(r?.data?.agendamento),
+                                        atendimento: normalizeAtendimentoOdonto(r?.data?.atendimento),
+                                        pagamento:   normalizePagamento(r?.data?.pagamento),
+                                      },
+                                    })),
     excluir:   (id)           => api.delete(`/agendamentos-odonto/${id}`),
   },
 
@@ -481,10 +605,17 @@ const api = {
 
   // ── Financeiro ────────────────────────────────────────────────────────
   financeiro: {
-    kpis:         (params)    => api.get('/financeiro/kpis', params),
-    movimentacoes:(params)    => api.get('/financeiro/movimentacoes', params),
-    criarMov:     (dados)     => api.post('/financeiro/movimentacoes', dados),
-    atualizarMov: (id, dados) => api.put(`/financeiro/movimentacoes/${id}`, dados),
+    kpis:           (params)    => api.get('/financeiro/kpis', params),
+    // Fonte de verdade ÚNICA para faturamento confirmado em Dashboard,
+    // Financeiro, Faturamento e Relatórios (Fase 3).
+    kpisUnificados: (params)    => api.get('/financeiro/kpis-unificados', params),
+    // DTOs minimizados para perfil financeiro (Fase 4 — LGPD).
+    pacientes:      (params)    => api.get('/financeiro/pacientes', params),
+    paciente:       (id)        => api.get(`/financeiro/pacientes/${id}`),
+    atendimentos:   (params)    => api.get('/financeiro/atendimentos', params),
+    movimentacoes:  (params)    => api.get('/financeiro/movimentacoes', params),
+    criarMov:       (dados)     => api.post('/financeiro/movimentacoes', dados),
+    atualizarMov:   (id, dados) => api.put(`/financeiro/movimentacoes/${id}`, dados),
   },
 
   // ── Contas a Pagar ────────────────────────────────────────────────────
@@ -516,13 +647,25 @@ const api = {
     liberar: (usuarioId)  => api.delete(`/consultorios/${usuarioId}`),
   },
 
+  // ── Salas (definições de consultórios) ───────────────────────────────
+  salas: {
+    listar:   ()          => api.get('/salas'),
+    criar:    (dados)     => api.post('/salas', dados),
+    atualizar:(id, dados) => api.put(`/salas/${id}`, dados),
+    excluir:  (id)        => api.delete(`/salas/${id}`),
+  },
+
   // ── Estoque ───────────────────────────────────────────────────────────
   estoque: {
-    listar:             ()           => api.get('/estoque'),
-    criar:              (dados)      => api.post('/estoque', dados),
-    atualizar:          (id, dados)  => api.put(`/estoque/${id}`, dados),
+    kpis:               ()           => api.get('/estoque/kpis'),
+    listar:             ()           => api.get('/estoque')
+                                           .then(r => ({ ...r, data: (r?.data || []).map(normalizeEstoque) })),
+    criar:              (dados)      => api.post('/estoque', dados)
+                                           .then(r => ({ ...r, data: normalizeEstoque(r?.data) })),
+    atualizar:          (id, dados)  => api.put(`/estoque/${id}`, dados)
+                                           .then(r => ({ ...r, data: normalizeEstoque(r?.data) })),
     excluir:            (id)         => api.delete(`/estoque/${id}`),
-    listarMovimentacoes:()           => api.get('/estoque/movimentacoes'),
+    listarMovimentacoes:(params)     => api.get('/estoque/movimentacoes', params),
     registrarMovimentacao: (dados)   => api.post('/estoque/movimentacoes', dados),
   },
 
@@ -549,6 +692,48 @@ const api = {
     atualizar: (id, dados)    => api.put(`/usuarios/${id}`, dados)
                                     .then(r => ({ ...r, data: normalizeUsuario(r?.data) })),
     excluir:   (id)           => api.delete(`/usuarios/${id}`),
+    uploadFoto: (id, file)    => {
+      const fd = new FormData();
+      fd.append('photo', file);
+      return uploadMultipart(`/usuarios/${id}/photo`, fd);
+    },
+  },
+
+  // ── CIDs (CID-10) ─────────────────────────────────────────────────────────
+  cids: {
+    listar:    (params)    => api.get('/cids', params),
+    criar:     (dados)     => api.post('/cids', dados),
+    atualizar: (id, dados) => api.put(`/cids/${id}`, dados),
+    excluir:   (id)        => api.delete(`/cids/${id}`),
+    seed:      ()          => api.post('/cids/seed', {}),
+  },
+
+  // ── Procedimentos Estéticos ───────────────────────────────────────────────
+  procedimentosEsteticos: {
+    listar:    (params)    => api.get('/procedimentos-esteticos', params),
+    criar:     (dados)     => api.post('/procedimentos-esteticos', dados),
+    atualizar: (id, dados) => api.put(`/procedimentos-esteticos/${id}`, dados),
+    excluir:   (id)        => api.delete(`/procedimentos-esteticos/${id}`),
+    seed:      ()          => api.post('/procedimentos-esteticos/seed', {}),
+  },
+
+  // ── Especialidades Extras ─────────────────────────────────────────────────
+  especialidadesExtras: {
+    listar:  (params) => api.get('/especialidades-extras', params),
+    criar:   (dados)  => api.post('/especialidades-extras', dados),
+    excluir: (id)     => api.delete(`/especialidades-extras/${id}`),
+  },
+
+  // ── Audit Log ─────────────────────────────────────────────────────────────
+  auditLogs: {
+    listar:   (params) => api.get('/audit-logs', params),
+    registrar: (dados) => api.post('/audit-logs', dados),
+  },
+
+  // ── Dashboard ─────────────────────────────────────────────────────────
+  dashboard: {
+    alertas: () => api.get('/dashboard/alertas'),
+    kpis:    () => api.get('/dashboard/kpis'),
   },
 
   health: () => api.get('/health'),

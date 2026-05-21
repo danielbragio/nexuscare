@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/xampp/htdocs/vynor-clinic-api/**)",
+      "Bash(php scripts/test_fase1_payment_gate_clinico.php)",
+      "Bash(\"C:/xampp/php/php.exe\" --version)",
+      "Bash(C:/xampp/php/php.exe *)",
+      "Bash(curl *)",
+      "Bash(npm run *)",
+      "Bash(disown)",
+      "Bash(npx playwright *)",
+      "Bash(dir *)",
+      "Bash(/c/xampp/php/php.exe *)",
+      "Bash(npx --offline eslint --no-fix --max-warnings=999 src/utils/financeUtils.js src/pages/Dashboard.jsx src/pages/DashboardFinanceiro.jsx src/pages/Financeiro.jsx src/pages/Faturamento.jsx src/pages/Relatorios.jsx src/pages/Pagamentos.jsx)",
+      "Bash(npx vite *)",
+      "Bash(/c/xampp/mysql/bin/mysql.exe -u root vynorsystem -e \"SHOW ENGINE INNODB STATUS\\\\G\")",
+      "Bash(/c/xampp/mysql/bin/mysql.exe -u root vynorsystem)",
+      "Bash(/c/xampp/mysql/bin/mysql.exe --version)",
+      "Read(//c/xampp/mysql/bin//**)",
+      "Bash(echo \"PID: $!\")",
+      "Bash(grep -n \"^        \\)}$\\\\|carregando ?\" /c/Users/bragio/Desktop/PROJETO/sistema-saude/src/pages/Financeiro.jsx)",
+      "Bash(npx eslint *)",
+      "Bash(/c/xampp/mysql/bin/mysql.exe -uroot --password=\"\" -e \"SELECT 1\")",
+      "Bash(/c/xampp/mysql/bin/mysql.exe -uroot -e \"SELECT 1\")",
+      "Read(//c/xampp/phpMyAdmin/**)",
+      "PowerShell(New-Item *)",
+      "PowerShell(Get-NetTCPConnection *)",
+      "Bash(./mysql.exe -h 127.0.0.1 -u root -p\"zsFVpRJjqFsg-RugarjK6Z\" vynorsystem -e \"SELECT id, login, nome, email, role, ativo FROM usuarios WHERE login = 'master';\")",
+      "Bash(./mysql.exe -h 127.0.0.1 -u root -p\"zsFVpRJjqFsg-RugarjK6Z\" vynorsystem -e \"SHOW TABLES;\")",
+      "Bash(./mysql.exe -h 127.0.0.1 -u root -pzsFVpRJjqFsg-RugarjK6Z vynorsystem -e ' *)",
+      "Bash(./mysql.exe -h 127.0.0.1 -u root -p\"zsFVpRJjqFsg-RugarjK6Z\" vynorsystem)",
+      "Bash(./mysql.exe -h 127.0.0.1 -u root -p\"zsFVpRJjqFsg-RugarjK6Z\" vynorsystem -e \"SELECT id, login, nome, email, role, ativo, deleted_at FROM usuarios;\")"
+    ]
+  }
+}
